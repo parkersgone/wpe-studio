@@ -791,6 +791,7 @@ function renderSettings() {
   bindSetting("#setPause", "pause_on_fullscreen", "bool");
   bindSetting("#setScaling", "scaling");
   bindSetting("#setClamp", "clamp");
+  bindSetting("#setFastSwitch", "fast_switch", "bool");
   bindSetting("#setParticles", "particles", "bool");
   bindSetting("#setMouse", "mouse", "bool");
   bindSetting("#setParallax", "parallax", "bool");

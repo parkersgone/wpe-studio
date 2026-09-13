@@ -54,6 +54,7 @@ html,body{
 .tile .noimg{width:100%;height:100%;display:grid;place-items:center;color:var(--fg3)}
 .tile:hover{border-color:var(--line)}
 .tile.live{border-color:var(--orange)}
+.tile.busy{opacity:.55}
 .tile .cap{
   position:absolute;left:0;right:0;bottom:0;padding:18px 8px 6px;font-size:11.5px;
   background:linear-gradient(transparent,rgba(0,0,0,.85));
@@ -239,13 +240,38 @@ function bind(id, key, kind) {
   };
 }
 
+// One click applies here -- this is a quick-pick panel, making you double-click
+// would be friction. Which means a DOUBLE click would otherwise fire two
+// applies back to back and restart the renderer twice, so the second is
+// swallowed: ignore a repeat of the same wallpaper while one is in flight, and
+// for a moment after.
+let applying = null;
+let appliedAt = 0;
+
 $("#grid").addEventListener("click", async (e) => {
   const t = e.target.closest(".tile");
   if (!t) return;
-  await api("/api/apply", { id: t.dataset.id });
-  status = await api("/api/status");
-  render();
+  const id = t.dataset.id;
+
+  if (applying) return;
+  if (id === currentId() && Date.now() - appliedAt < 1200) return;
+
+  applying = id;
+  t.classList.add("busy");
+  try {
+    await api("/api/apply", { id });
+    status = await api("/api/status");
+    appliedAt = Date.now();
+    render();
+  } finally {
+    applying = null;
+    t.classList.remove("busy");
+  }
 });
+
+// A double click is two clicks; the guard above already collapsed it into one
+// apply. Stop the browser doing anything else with it (text selection etc).
+$("#grid").addEventListener("dblclick", (e) => e.preventDefault());
 $("#q").addEventListener("input", (e) => { query = e.target.value; render(); });
 $("#filt").addEventListener("click", (e) => {
   const b = e.target.closest("button");

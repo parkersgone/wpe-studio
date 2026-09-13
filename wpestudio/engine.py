@@ -276,6 +276,11 @@ def _absolutise(values, source_item):
 
 # --- window demotion --------------------------------------------------------
 
+def _geometry(mon):
+    m = monitor(mon)
+    return "%dx%dx%dx%d" % (m["x"], m["y"], m["width"], m["height"])
+
+
 def _windows_by_class():
     """{window id: pid} for every linux-wallpaperengine window on screen."""
     out = {}
@@ -311,7 +316,9 @@ def _find_window(pid, timeout=25.0, before=None):
                 return win
         if not _alive(pid):
             return None
-        time.sleep(0.4)
+        # Poll fast. At 0.4s this alone added a visible fraction of a second to
+        # every switch, for no reason -- wmctrl is cheap.
+        time.sleep(0.08)
     return None
 
 
@@ -357,20 +364,57 @@ def apply(wid, mon=None, props=None, persist=True, wait_window=True):
         st = state.load()
 
     argv = build_argv(wid, mon, st=st, props=props)
-    stop(mon)
+
+    # HAND OVER, do not stop-then-start.
+    #
+    # Killing the old renderer first means the bare desktop is on screen for as
+    # long as the new one takes to load its assets -- a second or two, and
+    # longer for a big scene. Instead the new one is started underneath, and the
+    # old is only killed once the new one's window exists. The switch then looks
+    # instant, and a wallpaper that fails to start leaves the previous one up
+    # instead of dropping you to a blank desktop.
+    #
+    # The cost is both renderers being resident for that moment. On a small card
+    # with two heavy scenes that is a real spike, so it can be turned off.
+    handover = bool(st["global"].get("fast_switch", True)) and wait_window
+    previous = _geometry_pids(_geometry(mon)) if handover else []
+
+    if not handover:
+        stop(mon)
 
     before = _windows_by_class()
     log = open(_logfile(mon), "wb")
     proc = subprocess.Popen(argv, env=_env(), stdout=log, stderr=log,
                             stdin=subprocess.DEVNULL, start_new_session=True)
-    with open(_pidfile(mon), "w") as fh:
-        fh.write(str(proc.pid))
 
     win = _find_window(proc.pid, before=before) if wait_window else None
     if win:
         demote(win)
 
-    time.sleep(0.6)
+    if handover:
+        # The new window is mapped last so it sits above the old one at the same
+        # desktop layer; retiring the old now is invisible.
+        for old in previous:
+            if old == proc.pid:
+                continue
+            try:
+                os.kill(old, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + 2.0
+        while time.time() < deadline and any(_alive(p) for p in previous):
+            time.sleep(0.05)
+        for old in previous:
+            if _alive(old) and old != proc.pid:
+                try:
+                    os.kill(old, signal.SIGKILL)
+                except OSError:
+                    pass
+
+    with open(_pidfile(mon), "w") as fh:
+        fh.write(str(proc.pid))
+
+    time.sleep(0.15)
     ok = _alive(proc.pid)
 
     if persist:
