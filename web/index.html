@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallpaper Engine</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-skin="dark">
+
+<header class="titlebar">
+  <img class="logo" src="/wpe-asset/images/wp_logo.png" alt="">
+  <span class="appname">Wallpaper Engine <em id="verline">— Linux Edition</em></span>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-view="installed">Installed</button>
+    <button class="tab" data-view="workshop">Workshop</button>
+    <button class="tab" data-view="playlists">Playlists</button>
+    <button class="tab" data-view="screensaver">Lock screen</button>
+    <button class="tab" data-view="settings">Settings</button>
+  </nav>
+  <div class="titleactions">
+    <button class="ghost" id="btnSteamLib" title="Open the Steam library"><i class="fab">&#xf1b6;</i></button>
+    <button class="ghost" id="btnRescan" title="Rescan the library"><i class="fa">&#xf2f1;</i></button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ── INSTALLED ────────────────────────────────────────────────── -->
+  <section class="view active" data-view="installed">
+    <aside class="filters">
+      <div class="fgroup">
+        <div class="flabel">Filter results</div>
+        <div class="searchwrap">
+          <i class="fa">&#xf002;</i>
+          <input id="search" type="search" placeholder="Search" autocomplete="off">
+        </div>
+        <div class="fcount" id="fcount"></div>
+      </div>
+
+      <div class="fgroup">
+        <div class="flabel">Show only</div>
+        <div id="fType" class="checks"></div>
+      </div>
+
+      <div class="fgroup">
+        <div class="flabel">Source</div>
+        <div id="fSource" class="checks"></div>
+      </div>
+
+      <div class="fgroup">
+        <div class="flabel">Rating</div>
+        <div id="fRating" class="checks"></div>
+      </div>
+
+      <div class="fgroup">
+        <div class="flabel">Tags</div>
+        <div id="fTags" class="checks tagbox"></div>
+      </div>
+
+      <button class="btn subtle wide" id="btnResetFilters">Reset Filters</button>
+    </aside>
+
+    <div class="gridpane">
+      <div class="gridbar">
+        <div class="seg" id="sortSeg">
+          <button data-sort="recent" class="active">Recent</button>
+          <button data-sort="name">Name</button>
+          <button data-sort="type">Type</button>
+          <button data-sort="favorite">Favorites</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="hideBroken"> Hide unsupported</label>
+        <div class="spacer"></div>
+        <label class="zoom"><i class="fa">&#xf00a;</i>
+          <input type="range" id="zoom" min="120" max="320" step="10" value="188">
+        </label>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <aside class="detail" id="detail">
+      <div class="empty">No wallpaper selected</div>
+    </aside>
+  </section>
+
+  <!-- ── WORKSHOP ─────────────────────────────────────────────────── -->
+  <section class="view" data-view="workshop">
+    <div class="wsbar">
+      <div class="searchwrap grow">
+        <i class="fa">&#xf002;</i>
+        <input id="wsSearch" type="search" placeholder="Search Steam Workshop" autocomplete="off">
+      </div>
+      <div class="seg" id="wsSort">
+        <button data-sort="trend" class="active">Popular</button>
+        <button data-sort="mostrecent">Newest</button>
+        <button data-sort="totaluniquesubscribers">All-time</button>
+      </div>
+      <button class="btn" id="wsOpenSteam">Open in Steam <i class="fa">&#xf08e;</i></button>
+    </div>
+    <div class="wsnote">
+      Subscribe in Steam. New items appear under <b>Installed</b> once the download finishes.
+    </div>
+    <div class="grid ws" id="wsGrid"></div>
+    <div class="wspager">
+      <button class="btn subtle" id="wsPrev">Previous</button>
+      <span id="wsPage">1</span>
+      <button class="btn subtle" id="wsNext">Next</button>
+    </div>
+  </section>
+
+  <!-- ── PLAYLISTS ────────────────────────────────────────────────── -->
+  <section class="view" data-view="playlists">
+    <div class="pane">
+      <h2>Playlists</h2>
+      <p class="muted">Rotates the desktop wallpaper on a timer. One playlist active at a time.</p>
+      <div class="row">
+        <input id="plName" placeholder="Playlist name">
+        <label>Every <input id="plInterval" type="number" min="1" max="1440" value="30" style="width:70px"> min</label>
+        <select id="plOrder"><option value="sequential">In order</option><option value="random">Shuffle</option></select>
+        <button class="btn primary" id="plSave">Save playlist</button>
+      </div>
+      <p class="muted">Select wallpapers</p>
+      <div class="grid small" id="plGrid"></div>
+      <h3>Saved</h3>
+      <div id="plList" class="pllist"></div>
+    </div>
+  </section>
+
+  <!-- ── LOCK SCREEN ──────────────────────────────────────────────── -->
+  <section class="view" data-view="screensaver">
+    <div class="pane">
+      <h2>Lock screen</h2>
+      <div class="warnbox" style="color:#ffd9a8;background:rgba(255,92,0,.10);border-color:#ff5c00">
+        <b>Live wallpapers do not animate on the lock screen.</b><br>
+        cinnamon-screensaver takes an image, not a running process, so one frame is
+        captured from the wallpaper and shown as a still. Scene, video and web
+        wallpapers all end up frozen there. The desktop keeps animating normally.
+      </div>
+      <p class="muted">Mint's own lock screen handles the password. This only changes
+        what is behind it.</p>
+
+      <div class="settingrow">
+        <div><b>Background</b><div class="muted">One frame is captured from this wallpaper.
+          This is also the desktop's static background, which you only see if the live
+          wallpaper is stopped.</div></div>
+        <select id="saverWallpaper"></select>
+      </div>
+      <div class="settingrow">
+        <div><b>Idle timeout</b><div class="muted">Inactivity before the screen locks.</div></div>
+        <span><input id="saverTimeout" type="number" min="1" max="240" value="10" style="width:80px"> minutes</span>
+      </div>
+      <div class="settingrow">
+        <div><b>Require password</b></div>
+        <label class="switch"><input type="checkbox" id="saverLock" checked><span></span></label>
+      </div>
+
+      <div class="row">
+        <button class="btn primary" id="saverEnable">Apply</button>
+        <button class="btn" id="saverTest">Lock now</button>
+        <button class="btn danger" id="saverDisable">Restore previous background</button>
+      </div>
+
+      <h2>Login screen</h2>
+      <p class="muted">LightDM runs before your session, so it cannot show a live
+        wallpaper. The same still frame can be installed as the greeter background.
+        Requires root once.</p>
+      <div class="row">
+        <button class="btn" id="saverLogin">Set login background</button>
+      </div>
+
+      <div id="saverStatus" class="statusbox"></div>
+    </div>
+  </section>
+
+  <!-- ── SETTINGS ─────────────────────────────────────────────────── -->
+  <section class="view" data-view="settings">
+    <div class="pane">
+      <h2>General</h2>
+      <div class="settingrow"><div><b>Frame rate limit</b><div class="muted">Lower reduces GPU load and fan noise.</div></div>
+        <span class="sliderwrap"><input type="range" id="setFps" min="5" max="144" step="1"><output id="outFps"></output></span></div>
+      <div class="settingrow"><div><b>Volume</b></div>
+        <span class="sliderwrap"><input type="range" id="setVolume" min="0" max="100" step="1"><output id="outVolume"></output></span></div>
+      <div class="settingrow"><div><b>Mute</b></div>
+        <label class="switch"><input type="checkbox" id="setMute"><span></span></label></div>
+      <div class="settingrow"><div><b>Mute when another app plays audio</b></div>
+        <label class="switch"><input type="checkbox" id="setAutoMute"><span></span></label></div>
+      <div class="settingrow"><div><b>Audio reactivity</b><div class="muted">Wallpapers respond to system audio.</div></div>
+        <label class="switch"><input type="checkbox" id="setAudioProc"><span></span></label></div>
+      <div class="settingrow"><div><b>Pause when an app is fullscreen</b></div>
+        <label class="switch"><input type="checkbox" id="setPause"><span></span></label></div>
+
+      <h2>Rendering</h2>
+      <div class="settingrow"><div><b>Scaling</b></div>
+        <select id="setScaling"><option>default</option><option>stretch</option><option>fit</option><option>fill</option></select></div>
+      <div class="settingrow"><div><b>Clamping</b></div>
+        <select id="setClamp"><option>clamp</option><option>border</option><option>repeat</option></select></div>
+      <div class="settingrow"><div><b>Particles</b></div>
+        <label class="switch"><input type="checkbox" id="setParticles"><span></span></label></div>
+      <div class="settingrow"><div><b>Mouse interaction</b></div>
+        <label class="switch"><input type="checkbox" id="setMouse"><span></span></label></div>
+      <div class="settingrow"><div><b>Parallax</b></div>
+        <label class="switch"><input type="checkbox" id="setParallax"><span></span></label></div>
+
+      <h2>Desktop</h2>
+      <div class="settingrow"><div><b>Restore wallpaper at login</b></div>
+        <label class="switch"><input type="checkbox" id="setAutostart"><span></span></label></div>
+      <div class="settingrow"><div><b>Desktop icons</b>
+        <div class="muted">Cinnamon's icon layer owns the root window and covers the wallpaper.
+          Leave off unless the desktop is intentionally blank.</div></div>
+        <label class="switch"><input type="checkbox" id="setIcons"><span></span></label></div>
+
+      <h2>Steam</h2>
+      <div class="settingrow"><div><b>Override Steam's Play button</b>
+        <div class="muted" id="steamHint"></div></div>
+        <label class="switch"><input type="checkbox" id="setSteamHook"><span></span></label></div>
+      <div class="row">
+        <button class="btn" id="btnSteamLib2">Open Steam library</button>
+        <button class="btn" id="btnSteamWs">Open the Workshop in Steam</button>
+      </div>
+
+      <h2>Appearance</h2>
+      <div class="settingrow"><div><b>Skin</b></div><select id="setSkin"></select></div>
+
+      <h2>Diagnostics</h2>
+      <div class="row">
+        <button class="btn subtle" id="btnLog">Engine log</button>
+        <button class="btn subtle" id="btnPaths">Paths</button>
+      </div>
+      <pre id="diag" class="diag"></pre>
+    </div>
+  </section>
+</main>
+
+<footer class="statusbar">
+  <div class="monitors" id="monitors"></div>
+  <div class="nowplaying" id="nowplaying"></div>
+  <div class="spacer"></div>
+  <button class="btn danger" id="btnStop"><i class="fa">&#xf04d;</i> Stop</button>
+</footer>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+[Unit]
+Description=wpe-studio (Wallpaper Engine UI + wallpaper daemon)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:0
+Environment=WPE_BIND=127.0.0.1
+Environment=WPE_PORT=8014
+ExecStart=/ai/wpe-studio/bin/wpe-studio --server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

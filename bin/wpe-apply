@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""wpe-apply -- headless wallpaper control, no UI and no HTTP server.
+
+This is what the autostart entry runs at login, and what any script should use.
+
+  wpe-apply --restore          re-apply whatever each monitor last had
+  wpe-apply <id> [monitor]     apply one wallpaper
+  wpe-apply --stop [monitor]   stop
+  wpe-apply --list             what is installed
+  wpe-apply --status
+  wpe-apply --props <id>       show the wallpaper's settings and current values
+  wpe-apply --set <id> k=v ... set properties and re-apply if it is on screen
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wpestudio import engine, library, state  # noqa: E402
+
+
+def _coerce(text):
+    low = text.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+
+    cmd = argv[0]
+
+    if cmd == "--restore":
+        results = engine.restore()
+        if not results:
+            print("nothing saved yet")
+        for r in results:
+            print(r.get("monitor"), "|", r.get("title"),
+                  "|", "ok" if r.get("ok") else r.get("error"))
+        return 0
+
+    if cmd == "--stop":
+        print("stopped:", engine.stop(argv[1] if len(argv) > 1 else None))
+        return 0
+
+    if cmd == "--list":
+        for it in library.scan():
+            mark = "*" if it["customizable"] else " "
+            print("%-12s %-7s %s %s" % (it["id"], it["type"], mark, it["title"]))
+        return 0
+
+    if cmd == "--status":
+        print(json.dumps(engine.status(), indent=2))
+        return 0
+
+    if cmd == "--props":
+        wid = argv[1]
+        cur = state.props_for(wid)
+        for p in library.properties(wid, cur):
+            if p["type"] == "group":
+                print("\n[%s]" % p["label"])
+                continue
+            flag = "" if p["visible"] else "   (hidden by condition)"
+            print("  %-28s %-10s %s%s" % (p["key"], p["type"], p["value"], flag))
+        return 0
+
+    if cmd == "--set":
+        wid = argv[1]
+        props = dict(state.props_for(wid))
+        for pair in argv[2:]:
+            if "=" not in pair:
+                print("bad pair %r, want key=value" % pair, file=sys.stderr)
+                return 2
+            k, v = pair.split("=", 1)
+            props[k] = _coerce(v)
+        state.set_props(wid, props)
+        st = state.load()
+        for name, cfg in (st["monitors"] or {}).items():
+            if str(cfg.get("id")) == str(wid) and engine.running_pid(name):
+                r = engine.apply(wid, name, props=props)
+                print("re-applied on %s: %s"
+                      % (name, "ok" if r["ok"] else r.get("error")))
+        print(json.dumps(props, indent=2))
+        return 0
+
+    r = engine.apply(cmd, argv[1] if len(argv) > 1 else None)
+    print(json.dumps(r, indent=2))
+    return 0 if r.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

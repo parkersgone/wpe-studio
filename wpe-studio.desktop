@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Wallpaper Engine
+GenericName=Live wallpapers
+Comment=Browse and apply your Steam Workshop wallpapers
+Exec=/ai/wpe-studio/bin/wpe-studio
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Categories=Graphics;Settings;DesktopSettings;
+StartupWMClass=wpe-studio
+Keywords=wallpaper;wpe;background;live;

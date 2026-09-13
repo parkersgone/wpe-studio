@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""wpe-studio -- launcher.
+
+  wpe-studio                 open the app window (starts the server if needed)
+  wpe-studio --server        run the HTTP server in the foreground, no window
+  wpe-studio --restore       re-apply the saved wallpapers and exit
+  wpe-studio --from-steam …  what Steam's Play button runs; extra args ignored
+
+The window is GTK + WebKit2 because that is what is already on this box -- no
+Electron, no chromium, no pip install. If WebKit is missing we fall back to the
+default browser rather than failing.
+"""
+import argparse
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wpestudio import engine, paths, server  # noqa: E402
+
+
+def port_open(host, port, timeout=0.35):
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_server(host, port):
+    if port_open(host, port):
+        return None
+    proc = subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "--server",
+         "--host", host, "--port", str(port)],
+        stdout=open(os.path.join(paths.LOG_DIR, "server.log"), "ab"),
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    for _ in range(60):
+        if port_open(host, port):
+            return proc
+        time.sleep(0.15)
+    return proc
+
+
+def _make_steam_view(WebKit2, bg):
+    """A WebView for steamcommunity.com with its own persistent profile.
+
+    Separate from the app's view on purpose: the app view talks to a local
+    daemon over a message handler, and a logged-in Steam session has no
+    business sharing a content manager with that.
+    """
+    data_dir = os.path.join(paths.CONFIG_DIR, "steam-webview")
+    os.makedirs(data_dir, exist_ok=True)
+    try:
+        mgr = WebKit2.WebsiteDataManager(
+            base_data_directory=data_dir,
+            base_cache_directory=os.path.join(paths.CACHE_DIR, "steam-webview"))
+        ctx = WebKit2.WebContext.new_with_website_data_manager(mgr)
+        # Persist cookies to disk, otherwise he logs in to Steam on every launch.
+        ctx.get_cookie_manager().set_persistent_storage(
+            os.path.join(data_dir, "cookies.sqlite"),
+            WebKit2.CookiePersistentStorage.SQLITE)
+        ctx.get_cookie_manager().set_accept_policy(
+            WebKit2.CookieAcceptPolicy.ALWAYS)
+        v = WebKit2.WebView.new_with_context(ctx)
+    except Exception:
+        v = WebKit2.WebView()
+    v.set_background_color(bg)
+    st = v.get_settings()
+    st.set_enable_developer_extras(True)
+    st.set_user_agent(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.0 Safari/605.1.15")
+    return v
+
+
+def open_window(url):
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        try:
+            gi.require_version("WebKit2", "4.1")
+        except ValueError:
+            gi.require_version("WebKit2", "4.0")
+        from gi.repository import Gtk, Gdk, WebKit2
+    except Exception as e:
+        sys.stderr.write("webkit unavailable (%s); opening in a browser\n" % e)
+        subprocess.run(["xdg-open", url])
+        return 0
+
+    win = Gtk.Window(title="Wallpaper Engine")
+    # Size to the screen rather than a fixed 1280x860, which is a pinch too big
+    # once the Cinnamon panel and window decorations are accounted for.
+    try:
+        geo = Gdk.Screen.get_default().get_monitor_workarea(
+            Gdk.Screen.get_default().get_primary_monitor())
+        win.set_default_size(min(1180, max(900, geo.width - 220)),
+                             min(800, max(600, geo.height - 180)))
+    except Exception:
+        win.set_default_size(1180, 800)
+    win.set_position(Gtk.WindowPosition.CENTER)
+    try:
+        win.set_icon_from_file(os.path.join(paths.WPE_UI, "images/wp_logo.png"))
+    except Exception:
+        pass
+
+    dark = Gdk.RGBA(0.13, 0.13, 0.13, 1.0)
+
+    view = WebKit2.WebView()
+    s = view.get_settings()
+    s.set_enable_developer_extras(True)
+    s.set_enable_write_console_messages_to_stdout(True)
+    s.set_javascript_can_access_clipboard(True)
+    view.set_background_color(dark)
+
+    # --- the embedded Steam view -------------------------------------------
+    # A second WebView rather than an iframe: steamcommunity.com sets
+    # X-Frame-Options, so it cannot be framed, and proxying it to strip that
+    # would break the login this whole thing depends on. Its own persistent
+    # data directory keeps him signed in between launches, which is what makes
+    # Subscribe work in place instead of bouncing to the Steam client.
+    steam_view = _make_steam_view(WebKit2, dark)
+
+    nav = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    nav.set_name("steamnav")
+    # The nav strip sits on top of the HTML page, so it needs its own opaque
+    # background -- a transparent GTK box lets the page show through and the
+    # two sets of controls read as one broken row.
+    css = Gtk.CssProvider()
+    css.load_from_data(b"""
+    #steamnav { background: #1b1b1b; border-bottom: 1px solid #3a3a3a;
+                padding: 3px 6px; }
+    #steamnav button { color: #ddd; background: #2b2b2b; border: 1px solid #3a3a3a;
+                       border-radius: 3px; padding: 2px 10px; min-height: 22px; }
+    #steamnav button:hover { background: #3d3d3d; }
+    #steamnav label { color: #8a8a8a; font-size: 11px; }
+    """)
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    steam_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    steam_box.pack_start(nav, False, False, 0)
+    steam_box.pack_start(steam_view, True, True, 0)
+    steam_box.set_margin_top(40)      # clears the app's own title bar
+    steam_box.set_margin_bottom(44)   # clears its status bar
+    steam_box.set_halign(Gtk.Align.FILL)
+    steam_box.set_valign(Gtk.Align.FILL)
+    steam_box.set_hexpand(True)
+    steam_box.set_vexpand(True)
+    # Keep win.show_all() from revealing it; the bridge turns it on. The flag
+    # has to come back OFF before show_all(), or show_all skips the children
+    # and you get an empty black panel.
+    steam_box.set_no_show_all(True)
+
+    STEAM_HOME = "https://steamcommunity.com/app/431960/workshop/"
+
+    def nav_button(label, fn, tip=None):
+        b = Gtk.Button(label=label)
+        b.set_relief(Gtk.ReliefStyle.NONE)
+        if tip:
+            b.set_tooltip_text(tip)
+        b.connect("clicked", lambda *_a: fn())
+        nav.pack_start(b, False, False, 0)
+        return b
+
+    nav_button("←", steam_view.go_back, "Back")
+    nav_button("→", steam_view.go_forward, "Forward")
+    nav_button("⟳", steam_view.reload, "Reload")
+    nav_button("Workshop", lambda: steam_view.load_uri(STEAM_HOME), "Back to the Workshop")
+    nav_button("Your subscriptions",
+               lambda: steam_view.load_uri(
+                   "https://steamcommunity.com/my/myworkshopfiles/?appid=431960&browsefilter=mysubscriptions"),
+               "What you are subscribed to")
+    addr = Gtk.Label(label="")
+    addr.set_ellipsize(3)
+    addr.set_xalign(0)
+    nav.pack_start(addr, True, True, 6)
+
+    def on_load_changed(_v, _ev):
+        addr.set_text(steam_view.get_uri() or "")
+        # A subscribe click changes what is on disk within a few seconds;
+        # re-scan so the Installed tab is current without him asking.
+        view.run_javascript(
+            "window.__wpeRescan && window.__wpeRescan();", None, None, None)
+    steam_view.connect("load-changed", on_load_changed)
+
+    overlay = Gtk.Overlay()
+    overlay.add(view)
+    overlay.add_overlay(steam_box)
+    win.add(overlay)
+
+    # --- page -> app bridge -------------------------------------------------
+    def on_message(_mgr, result):
+        # Never swallow this silently: if the bridge breaks, the Workshop tab
+        # goes blank with no clue why, which is exactly what happened once.
+        try:
+            val = result.get_js_value() if hasattr(result, "get_js_value") else result
+            payload = json.loads(val.to_string())
+        except Exception as exc:
+            sys.stderr.write("wpe-studio: bad bridge message: %r\n" % (exc,))
+            return
+        if payload.get("action") == "steam":
+            if payload.get("show"):
+                target = payload.get("url") or STEAM_HOME
+                if (steam_view.get_uri() or "") == "":
+                    steam_view.load_uri(target)
+                elif payload.get("navigate"):
+                    steam_view.load_uri(target)
+                steam_box.set_no_show_all(False)
+                steam_box.show_all()
+            else:
+                steam_box.hide()
+
+    ucm = view.get_user_content_manager()
+    ucm.connect("script-message-received::wpe", on_message)
+    ok = ucm.register_script_message_handler("wpe")
+    sys.stderr.write("wpe-studio: bridge registered=%r\n" % (ok,))
+
+    view.load_uri(url)
+
+    def on_key(_w, ev):
+        name = Gdk.keyval_name(ev.keyval) or ""
+        ctrl = ev.state & Gdk.ModifierType.CONTROL_MASK
+        if name == "F5" or (ctrl and name in ("r", "R")):
+            (steam_view if steam_box.get_visible() else view).reload()
+            return True
+        if name == "F12":
+            view.get_inspector().show()
+            return True
+        if name == "Escape" and steam_box.get_visible():
+            steam_box.hide()
+            view.run_javascript("window.__wpeLeaveSteam && window.__wpeLeaveSteam();",
+                                None, None, None)
+            return True
+        if ctrl and name in ("q", "Q", "w", "W"):
+            Gtk.main_quit()
+            return True
+        return False
+
+    win.connect("key-press-event", on_key)
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--server", action="store_true")
+    ap.add_argument("--restore", action="store_true")
+    ap.add_argument("--from-steam", action="store_true")
+    ap.add_argument("--host", default=os.environ.get("WPE_BIND", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("WPE_PORT", "8014")))
+    ap.add_argument("--no-window", action="store_true")
+    ap.add_argument("--tab", default="", help="open straight to a tab")
+    args, _unknown = ap.parse_known_args()   # Steam appends the proton command
+
+    if args.restore:
+        for r in engine.restore():
+            print(r.get("monitor"), r.get("title"), "ok" if r.get("ok") else r.get("error"))
+        return 0
+
+    if args.server:
+        print("wpe-studio serving on http://%s:%d" % (args.host, args.port), flush=True)
+        server.serve(args.host, args.port)
+        return 0
+
+    ensure_server(args.host, args.port)
+    url = "http://%s:%d/%s" % (args.host, args.port,
+                               ("#" + args.tab) if args.tab else "")
+    if args.no_window:
+        print(url)
+        return 0
+    return open_window(url)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
