@@ -18,6 +18,7 @@ const App = {
   filters: { q: "", type: new Set(), source: new Set(), rating: new Set(), tags: new Set() },
   sort: "recent",
   ws: { page: 1, sort: "trend", q: "" },
+  scripted: new Set(),   // wallpapers whose options cannot take effect here
   plPicked: new Set(),
 };
 
@@ -70,7 +71,6 @@ async function boot() {
   renderGrid();
   renderMonitors();
   renderSettings();
-  renderSaver();
   renderPlaylists();
   renderStatus();
   if (App.sel) openDetail(App.sel);
@@ -229,6 +229,8 @@ function tileHTML(it, live, fav) {
       ${live ? `<span class="badge running">Active</span>` : ""}
       ${preset ? `<span class="badge preset">Preset</span>` : ""}
       ${bad ? `<span class="badge broken" title="${esc(bad)}">Unsupported</span>` : ""}
+      ${App.scripted.has(it.id) ? `<span class="badge scripted"
+        title="Options are driven by a scene script the Linux renderer does not run">opts n/a</span>` : ""}
       ${mature ? `<span class="badge mature">${esc(it.contentrating)}</span>` : ""}
     </div>
     <div class="fav ${fav ? "on" : ""}" data-fav="${esc(it.id)}"><i class="fa">&#xf005;</i></div>
@@ -270,7 +272,9 @@ async function openDetail(id) {
   const d = await api("/api/wallpaper/" + encodeURIComponent(id));
   if (d.error) { toast(d.error, true); return; }
   App.detail = d;
+  if (d.script_driven) App.scripted.add(id); else App.scripted.delete(id);
   drawDetail();
+  renderGrid();
 }
 
 function fmtSize(n) {
@@ -314,9 +318,18 @@ function drawDetail() {
     ${it.description ? `<div class="sect">Description</div><div class="desc">${esc(it.description)}</div>` : ""}
   `;
 
+  const scripted = d.script_driven;
+  const scriptWarn = scripted ? `<div class="warnbox" style="font-size:11px">
+      <b>These options will not do anything.</b> This wallpaper changes itself
+      through a scene script (<code>applyUserProperties</code>), and
+      linux-wallpaperengine does not run that hook — so the value is stored and
+      handed to the renderer, and nothing consumes it.
+      <br><br>Options work on <b>web</b> wallpapers and on scenes that map a
+      setting straight onto a colour, a layer or a shader.</div>` : "";
+
   const editable = d.properties.filter((p) => p.type !== "group" || true);
   const props = editable.length
-    ? `<div class="sect">Properties</div><div id="props">${editable.map(propHTML).join("")}</div>
+    ? `<div class="sect">Properties</div>${scriptWarn}<div id="props">${editable.map(propHTML).join("")}</div>
        <div class="btnrow">
          <button class="btn" id="pReset"><i class="fa">&#xf2f1;</i> Reset</button>
          <button class="btn" id="pSave"><i class="fa">&#xf0c7;</i> Save preset</button>
@@ -325,7 +338,7 @@ function drawDetail() {
             <option value="">Load preset</option>
             ${d.presets.map((n) => `<option>${esc(n)}</option>`).join("")}
           </select></div>` : ""}`
-    : `<div class="sect">Properties</div><div class="muted">No configurable settings.</div>`;
+    : `<div class="sect">Properties</div>${scriptWarn}<div class="muted">No configurable settings.</div>`;
 
   $("#detail").innerHTML = head + props;
 
@@ -599,6 +612,23 @@ function renderSettings() {
   bindSetting("#setMouse", "mouse", "bool");
   bindSetting("#setParallax", "parallax", "bool");
 
+  const tr = $("#setTranslate");
+  const trInfo = App.boot.translate || {};
+  tr.checked = !!g.translate;
+  tr.disabled = !trInfo.ok;
+  $("#translateHint").textContent = trInfo.ok
+    ? (trInfo.model_present
+        ? `Uses ${trInfo.model} locally. Nothing leaves this machine; results are cached.`
+        : `Ollama is running but ${trInfo.model} is not pulled — run: ollama pull ${trInfo.model}`)
+    : `Needs Ollama running locally (${trInfo.error || "not reachable"}).`;
+  tr.onchange = async () => {
+    await api("/api/settings", { global: { translate: tr.checked }, apply: false });
+    App.boot.state.global.translate = tr.checked;
+    toast(tr.checked ? "Translating labels — first open of a wallpaper is slower"
+                     : "Translation off");
+    if (App.detail) openDetail(App.detail.item.id);
+  };
+
   const skin = $("#setSkin");
   skin.innerHTML = App.boot.skins.map((s) =>
     `<option value="${s.key}" ${g.skin === s.key ? "selected" : ""}>${esc(s.label)}</option>`).join("");
@@ -654,6 +684,14 @@ function renderSettings() {
   $("#btnLog").onclick = async () => {
     const r = await api("/api/log?monitor=" + encodeURIComponent(App.monitor));
     $("#diag").textContent = r.log || "(empty)";
+  };
+  $("#btnWalkthrough").onclick = async () => {
+    App.deps = await api("/api/deps");
+    WT.i = 0;
+    const el = $("#wt");
+    el.hidden = false;
+    el.style.display = "";
+    wtRender();
   };
   $("#btnPaths").onclick = () => {
     $("#diag").textContent = JSON.stringify(
@@ -775,44 +813,209 @@ $("#plList").addEventListener("click", async (e) => {
   renderPlaylists();
 });
 
-/* ── lock screen ──────────────────────────────────────────────────── */
-function renderSaver() {
-  const s = App.boot.saver;
-  const ss = s.screensaver;
-  const sel = $("#saverWallpaper");
-  sel.innerHTML = `<option value="">— none —</option>` + App.items.map((it) =>
-    `<option value="${esc(it.id)}" ${String(ss.wallpaper_id) === it.id ? "selected" : ""}>${esc(it.title)}</option>`).join("");
-  $("#saverTimeout").value = ss.timeout_min;
-  $("#saverLock").checked = !!ss.lock;
-  $("#saverStatus").textContent = JSON.stringify(s, null, 2);
+/* ── first-run walkthrough ───────────────────────────────────────────
+ * Shown once, after the first successful boot. It exists because the two
+ * things most likely to make this look broken on a fresh install are silent:
+ * desktop icons covering the wallpaper, and Steam's Play button still opening
+ * the Proton build. Both are checked here with a button to fix them, rather
+ * than documented somewhere nobody reads.
+ */
+const WT = {
+  i: 0,
+  steps: [
+    {
+      title: "Wallpaper Engine, on Linux",
+      body: () => `<p>This runs the wallpapers you already own on Steam, using
+        <b>linux-wallpaperengine</b> as the renderer. Wallpaper Engine's own app
+        cannot draw on a Linux desktop — that is the whole reason this exists.</p>
+        <p>Four quick checks and you are done.</p>`,
+    },
+    {
+      title: "Checking your setup",
+      // Reads /etc/os-release and names the packages for THIS distro, so there
+      // is one install command instead of a README with five sections.
+      body: () => {
+        const c = (App.boot.status || {}).capabilities || {};
+        const st = App.boot.status || {};
+        const steam = c.steam || {};
+        const d = App.deps;
+        const row = (state, what, detail, extra) =>
+          `<div class="wtrow ${state}"><span class="ico">${
+            state === "ok" ? "✔" : state === "warn" ? "!" : "✕"}</span>
+            <span class="what">${esc(what)}<small>${esc(detail)}</small></span>${extra || ""}</div>`;
+
+        let out = "";
+        if (d) {
+          out += `<p>Detected <b>${esc(d.distro.name)}</b>${
+            d.distro.manager ? ` — packages via <b>${esc(d.distro.manager)}</b>` : ""}.</p>`;
+          for (const r of d.requirements) {
+            if (r.ok) continue;
+            out += row(r.optional ? "warn" : "bad", r.what,
+              r.packaged ? `${r.why} — package: ${r.package}`
+                         : `${r.why} — not packaged for ${d.distro.manager || "this distro"}`);
+          }
+          if (d.install_command) {
+            out += `<div class="wtrow warn"><span class="ico">↓</span>
+              <span class="what">Install what is missing
+                <small style="font-family:monospace">sudo ${esc(d.install_command)}</small></span>
+              <button class="btn primary" id="wtInstall">Install</button></div>`;
+          }
+          if (!d.engine.ok) {
+            out += row("bad", "linux-wallpaperengine", d.engine.note || "not found");
+          }
+          if (!d.missing.length && d.engine.ok) {
+            out += row("ok", "Dependencies", "everything this needs is installed");
+          }
+        }
+        out += row(steam.workshop_present ? "ok" : "bad", "Steam library",
+                   steam.workshop_present ? steam.root
+                     : "no Workshop content for app 431960 — subscribe to a wallpaper in Steam");
+        out += row(App.items.length ? "ok" : "bad", "Wallpapers", App.items.length + " found");
+        out += row(c.render ? "ok" : "bad", "Display server",
+                   c.render ? c.session + " — supported" : (c.render_note || "unsupported"));
+        return out;
+      },
+    },
+    {
+      title: "Desktop icons",
+      body: () => {
+        const on = App.boot.status.desktop_icons;
+        return `<p>Your file manager owns the desktop's root window. While it does,
+          it paints over the wallpaper and you get a black screen with a working
+          process behind it — <b>the single most common reason this looks broken</b>.</p>
+          <div class="wtrow ${on ? "warn" : "ok"}">
+            <span class="ico">${on ? "!" : "✔"}</span>
+            <span class="what">Desktop icons are ${on ? "ON" : "off"}
+              <small>${on ? "They will cover the wallpaper." : "Nothing is covering the wallpaper."}</small></span>
+            ${on ? `<button class="btn primary" id="wtIcons">Turn off</button>` : ""}
+          </div>`;
+      },
+    },
+    {
+      title: "Pick a wallpaper",
+      body: () => `<p>Click one to put it on your desktop now. You can change it any
+        time from the grid, the tray icon, or <code>wpe-apply</code>.</p>
+        <div class="wtgrid" id="wtPick">${App.items.slice(0, 12).map((it) =>
+          `<div class="tile" data-wt="${esc(it.id)}">
+            ${it.has_preview ? `<img loading="lazy" src="${withToken("/preview/" + encodeURIComponent(it.id))}" alt="">`
+                             : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
+            <div class="cap">${esc(it.title)}</div></div>`).join("")}</div>`,
+    },
+    {
+      title: "Start with your session",
+      body: () => {
+        const g = App.boot.state.global;
+        const steam = App.boot.steam || {};
+        return `<p>Two optional bits of wiring.</p>
+          <div class="wtrow ${g.autostart ? "ok" : "warn"}">
+            <span class="ico">${g.autostart ? "✔" : "○"}</span>
+            <span class="what">Restore the wallpaper at login
+              <small>Runs <code>wpe-apply --restore</code> when you log in.</small></span>
+            <label class="switch"><input type="checkbox" id="wtAuto" ${g.autostart ? "checked" : ""}><span></span></label>
+          </div>
+          <div class="wtrow ${steam.installed ? "ok" : "warn"}">
+            <span class="ico">${steam.installed ? "✔" : "○"}</span>
+            <span class="what">Steam's Play button opens this app
+              <small>${steam.installed ? "Active."
+                : "Otherwise Play starts the Windows build under Proton, which cannot render."}
+                ${steam.steam_running ? "Steam must be closed to change this." : ""}</small></span>
+            ${steam.installed || steam.steam_running ? "" :
+              `<button class="btn primary" id="wtSteam">Enable</button>`}
+          </div>`;
+      },
+    },
+    {
+      title: "That's it",
+      body: () => `<p>A few things worth knowing:</p>
+        <div class="wtrow"><span class="ico">◆</span><span class="what">Some wallpapers' own options do nothing
+          <small>If a wallpaper drives itself with a scene script, the renderer does not run that hook yet.
+          Those are flagged on the tile.</small></span></div>
+        <div class="wtrow"><span class="ico">◆</span><span class="what">Labels in another language
+          <small>Settings ▸ Translate labels to English, done locally.</small></span></div>
+        <div class="wtrow"><span class="ico">◆</span><span class="what">It keeps running without this window
+          <small>Use the tray icon, or close this — the wallpaper stays up.</small></span></div>`,
+    },
+  ],
+};
+
+function wtRender() {
+  const step = WT.steps[WT.i];
+  $("#wtSteps").innerHTML = WT.steps.map((_s, n) =>
+    `<i class="${n < WT.i ? "done" : n === WT.i ? "now" : ""}"></i>`).join("");
+  $("#wtTitle").textContent = step.title;
+  $("#wtText").innerHTML = "";
+  $("#wtCheck").innerHTML = step.body();
+  $("#wtBack").disabled = WT.i === 0;
+  $("#wtNext").textContent = WT.i === WT.steps.length - 1 ? "Done" : "Next";
+
+  const inst = $("#wtInstall");
+  if (inst) inst.onclick = async () => {
+    const r = await api("/api/install-deps", {});
+    toast(r.popped ? "Root terminal opened — enter your password there"
+                   : (r.error || "failed"), !r.popped);
+  };
+
+  const icons = $("#wtIcons");
+  if (icons) icons.onclick = async () => {
+    await api("/api/desktop-icons", { on: false });
+    App.boot.status = await api("/api/status");
+    wtRender();
+  };
+  const pick = $("#wtPick");
+  if (pick) pick.onclick = async (e) => {
+    const t = e.target.closest("[data-wt]");
+    if (!t) return;
+    $$("#wtPick .tile").forEach((x) => x.classList.remove("selected"));
+    t.classList.add("selected");
+    toast("Applying…");
+    const r = await api("/api/apply", { id: t.dataset.wt });
+    toast(r.ok ? "Applied — " + r.title : (r.error || "failed"), !r.ok);
+  };
+  const auto = $("#wtAuto");
+  if (auto) auto.onchange = async () => {
+    await api("/api/autostart", { on: auto.checked });
+    App.boot.state.global.autostart = auto.checked;
+  };
+  const steam = $("#wtSteam");
+  if (steam) steam.onclick = async () => {
+    const r = await api("/api/steam", { action: "install" });
+    App.boot.steam = await api("/api/steam");
+    toast(r.ok ? "Play now opens this app" : (r.message || r.error || "failed"), !r.ok);
+    wtRender();
+  };
 }
 
-$("#saverEnable").onclick = async () => {
-  const id = $("#saverWallpaper").value;
-  if (!id) return toast("Select a wallpaper", true);
-  toast("Rendering a still frame — a few seconds");
-  const r = await api("/api/saver", {
-    id, timeout_min: Number($("#saverTimeout").value), lock: $("#saverLock").checked,
-  });
-  toast(r.ok ? "Lock screen background set" : (r.error || "Failed"), !r.ok);
-  App.boot.saver = await api("/api/saver");
-  renderSaver();
+async function wtFinish() {
+  // Close first and unconditionally: if the POST fails the user must still get
+  // their app back, and the worst case is the walkthrough offering itself once
+  // more next launch.
+  const el = $("#wt");
+  el.hidden = true;
+  el.style.display = "none";
+  try {
+    await api("/api/walkthrough-done", {});
+    App.boot.state.global.seen_walkthrough = true;
+  } catch (e) {
+    toast("Could not save that you finished setup", true);
+  }
+}
+
+$("#wtNext").onclick = () => {
+  if (WT.i === WT.steps.length - 1) return wtFinish();
+  WT.i++; wtRender();
 };
-$("#saverTest").onclick = async () => {
-  const r = await api("/api/saver", { action: "test" });
-  if (!r.ok) toast(r.error || "Failed", true);
-};
-$("#saverDisable").onclick = async () => {
-  const r = await api("/api/saver", { action: "disable" });
-  toast(r.restored ? "Previous background restored" : "Restored");
-  App.boot.saver = await api("/api/saver");
-  renderSaver();
-};
-$("#saverLogin").onclick = async () => {
-  const r = await api("/api/saver", { action: "login_background" });
-  toast(r.popped ? "Root terminal opened — enter your password there"
-                 : (r.error || "Failed"), !r.popped);
-};
+$("#wtBack").onclick = () => { if (WT.i > 0) { WT.i--; wtRender(); } };
+$("#wtSkip").onclick = wtFinish;
+
+async function maybeWalkthrough() {
+  App.deps = await api("/api/deps");
+  if (App.boot.state.global.seen_walkthrough) return;
+  WT.i = 0;
+  const el = $("#wt");
+  el.hidden = false;
+  el.style.display = "";
+  wtRender();
+}
 
 /* ── go ───────────────────────────────────────────────────────────── */
 /* #workshop / #settings in the URL opens straight to that tab -- handy for a
@@ -825,5 +1028,5 @@ function openHashTab() {
   if (wid) openDetail(wid);
 }
 window.addEventListener("hashchange", openHashTab);
-boot().then(openHashTab);
+boot().then(() => { openHashTab(); maybeWalkthrough(); });
 setInterval(() => { if (App.boot) refreshStatus(); }, 6000);

@@ -13,9 +13,6 @@ The honest support matrix:
                   do Wayland via wlr-layer-shell, but none of this wrapper can.
   desktop icons   the file manager that owns the root window differs per
                   desktop; known for Cinnamon, GNOME, MATE and Xfce.
-  lock screen     the background key differs per desktop, and on KDE it is not
-                  a gsetting at all -- so that one is reported unsupported
-                  rather than half-done.
 """
 import os
 import shutil
@@ -50,16 +47,6 @@ def desktop_env():
 
 
 # schema, key, and the matching "how should it be scaled" key
-BACKGROUND_KEYS = {
-    "cinnamon": ("org.cinnamon.desktop.background", "picture-uri", "picture-options"),
-    "gnome":    ("org.gnome.desktop.background", "picture-uri", "picture-options"),
-    "budgie":   ("org.gnome.desktop.background", "picture-uri", "picture-options"),
-    "mate":     ("org.mate.background", "picture-filename", "picture-options"),
-    # Xfce uses xfconf, not gsettings; handled separately.
-    # KDE stores it in a plasma config that needs a scripting call -- not worth
-    # guessing at, so it reports unsupported.
-}
-
 # the process that owns the root window, and how to ask it to stop
 DESKTOP_ICON_KEYS = {
     "cinnamon": ("org.nemo.desktop", "show-desktop-icons"),
@@ -82,64 +69,6 @@ def _gs_set(schema, key, value):
 def _has_schema(schema):
     r = subprocess.run(["gsettings", "list-schemas"], capture_output=True, text=True)
     return schema in (r.stdout or "").split()
-
-
-# --- background -------------------------------------------------------------
-
-def background_supported():
-    de = desktop_env()
-    if de in BACKGROUND_KEYS:
-        return _has_schema(BACKGROUND_KEYS[de][0])
-    if de == "xfce":
-        return bool(shutil.which("xfconf-query"))
-    return False
-
-
-def get_background():
-    de = desktop_env()
-    if de in BACKGROUND_KEYS:
-        schema, key, _opts = BACKGROUND_KEYS[de]
-        return _gs_get(schema, key)
-    if de == "xfce":
-        r = subprocess.run(
-            ["xfconf-query", "-c", "xfce4-desktop", "-l"],
-            capture_output=True, text=True)
-        for line in (r.stdout or "").splitlines():
-            if line.strip().endswith("/last-image"):
-                got = subprocess.run(["xfconf-query", "-c", "xfce4-desktop",
-                                      "-p", line.strip()],
-                                     capture_output=True, text=True)
-                return got.stdout.strip()
-    return None
-
-
-def set_background(path_or_uri):
-    """Set the desktop (and therefore lock screen) background. True on success."""
-    de = desktop_env()
-    if de in BACKGROUND_KEYS:
-        schema, key, opts = BACKGROUND_KEYS[de]
-        # MATE wants a bare path; the GNOME-lineage ones want a file:// URI.
-        value = path_or_uri
-        if key.endswith("filename"):
-            value = path_or_uri[len("file://"):] if path_or_uri.startswith("file://") else path_or_uri
-        elif not value.startswith("file://") and value.startswith("/"):
-            value = "file://" + value
-        ok = _gs_set(schema, key, value)
-        _gs_set(schema, opts, "zoom")
-        return ok
-    if de == "xfce":
-        plain = path_or_uri[len("file://"):] if path_or_uri.startswith("file://") else path_or_uri
-        r = subprocess.run(["xfconf-query", "-c", "xfce4-desktop", "-l"],
-                           capture_output=True, text=True)
-        touched = False
-        for line in (r.stdout or "").splitlines():
-            if line.strip().endswith("/last-image"):
-                subprocess.run(["xfconf-query", "-c", "xfce4-desktop",
-                                "-p", line.strip(), "-s", plain],
-                               capture_output=True)
-                touched = True
-        return touched
-    return False
 
 
 # --- desktop icons ----------------------------------------------------------
@@ -165,37 +94,20 @@ def set_icons(on):
     return _gs_set(schema, key, "true" if on else "false")
 
 
-# --- lock screen ------------------------------------------------------------
+# --- steam -------------------------------------------------------------------
 
-def lockscreen_provider():
-    """Which locker reads the desktop background, if any."""
-    de = desktop_env()
-    if de == "cinnamon" and shutil.which("cinnamon-screensaver-command"):
-        return "cinnamon-screensaver"
-    if de in ("gnome", "budgie"):
-        # GNOME's shield uses the background too, but only via the *screensaver*
-        # schema on some versions; report it and let the UI say "may vary".
-        return "gnome-shell"
-    if de == "mate":
-        return "mate-screensaver"
-    return None
-
-
-def lock_now():
-    for cmd in (["cinnamon-screensaver-command", "--lock"],
-                ["loginctl", "lock-session"],
-                ["xdg-screensaver", "lock"],
-                ["mate-screensaver-command", "--lock"]):
-        if not shutil.which(cmd[0]):
-            continue
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode == 0:
-            return {"ok": True, "used": cmd[0]}
-    return {"ok": False, "error": "no known screen locker on PATH"}
-
-
-def idle_settings_supported():
-    return desktop_env() == "cinnamon" and _has_schema("org.cinnamon.desktop.session")
+def steam_note():
+    """Where Steam and the wallpapers were found, so a wrong guess is visible."""
+    from . import paths
+    return {
+        "root": paths.STEAM_ROOT,
+        "flatpak": "/.var/app/com.valvesoftware.Steam/" in paths.STEAM_ROOT,
+        "workshop_present": os.path.isdir(paths.WORKSHOP),
+        "app_present": os.path.isdir(paths.WPE_APP),
+        "extra_libraries": paths.extra_library_folders(),
+        "engine": paths.ENGINE,
+        "engine_present": os.path.exists(paths.ENGINE),
+    }
 
 
 # --- the summary the UI uses ------------------------------------------------
@@ -211,10 +123,10 @@ def capabilities():
             "This wrapper drives X11 windows directly (xrandr/wmctrl/xprop). "
             "On Wayland nothing will appear, even though linux-wallpaperengine "
             "itself supports wlr-layer-shell.",
-        "background": background_supported(),
         "desktop_icons": icons_supported(),
-        "lockscreen": bool(lockscreen_provider()),
-        "lockscreen_provider": lockscreen_provider(),
-        "idle_settings": idle_settings_supported(),
+        "desktop_icons_note": None if icons_supported() else
+            "No known desktop-icons setting for this desktop. If icons cover the "
+            "wallpaper, turn them off in your file manager's preferences.",
+        "steam": steam_note(),
         "tested_on": "Linux Mint 22 / Cinnamon / X11",
     }

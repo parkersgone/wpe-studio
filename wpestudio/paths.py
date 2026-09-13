@@ -17,13 +17,60 @@ def _env(name, default):
 
 
 # --- Steam -----------------------------------------------------------------
-STEAM_ROOT = _env(
-    "WPE_STEAM_ROOT",
-    os.path.join(HOME, ".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+# Steam installs itself in a different place depending on how it was packaged,
+# and the distro is a bad predictor -- the flatpak and the native package are
+# both common everywhere. So probe, in the order that finds the *real* library
+# first, and let WPE_STEAM_ROOT override for anything unusual.
+STEAM_CANDIDATES = (
+    os.path.join(HOME, ".var/app/com.valvesoftware.Steam/.local/share/Steam"),  # flatpak
+    os.path.join(HOME, ".local/share/Steam"),                                   # native
+    os.path.join(HOME, ".steam/steam"),                                         # older native
+    os.path.join(HOME, ".steam/root"),
+    os.path.join(HOME, "snap/steam/common/.local/share/Steam"),                 # snap
+    "/usr/share/steam",
 )
+
+
+def _find_steam_root():
+    override = os.environ.get("WPE_STEAM_ROOT")
+    if override:
+        return override
+    # Prefer an install that actually has the Wallpaper Engine workshop content;
+    # a bare Steam directory with no library is worse than useless here.
+    for base in STEAM_CANDIDATES:
+        if os.path.isdir(os.path.join(base, "steamapps/workshop/content/431960")):
+            return base
+    for base in STEAM_CANDIDATES:
+        if os.path.isdir(os.path.join(base, "steamapps")):
+            return base
+    return STEAM_CANDIDATES[0]
+
+
+STEAM_ROOT = _find_steam_root()
 STEAMAPPS = os.path.join(STEAM_ROOT, "steamapps")
 WORKSHOP = os.path.join(STEAMAPPS, "workshop/content/431960")
 WPE_APP = os.path.join(STEAMAPPS, "common/wallpaper_engine")
+
+
+def extra_library_folders():
+    """Steam libraries on other drives, from libraryfolders.vdf.
+
+    People keep their games on a second disk far more often than they keep
+    Steam there, so scanning only STEAM_ROOT finds nothing for them.
+    """
+    out = []
+    vdf = os.path.join(STEAMAPPS, "libraryfolders.vdf")
+    try:
+        with open(vdf, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return out
+    import re as _re
+    for m in _re.finditer(r'"path"\s+"((?:[^"\\]|\\.)*)"', text):
+        base = m.group(1).replace("\\\\", "/")
+        if os.path.isdir(base) and os.path.abspath(base) != os.path.abspath(STEAM_ROOT):
+            out.append(base)
+    return out
 WPE_UI = os.path.join(WPE_APP, "ui/dist")
 WPE_LOCALE = os.path.join(WPE_APP, "locale")
 WPE_PROJECTS = os.path.join(WPE_APP, "projects")
@@ -31,7 +78,23 @@ WPE_ASSETS = os.path.join(WPE_APP, "assets")
 STEAM_USERDATA = os.path.join(STEAM_ROOT, "userdata")
 
 # --- the renderer ----------------------------------------------------------
-ENGINE = _env("WPE_ENGINE_BIN", os.path.join(HOME, ".local/bin/linux-wallpaperengine"))
+def _find_engine():
+    override = os.environ.get("WPE_ENGINE_BIN")
+    if override:
+        return override
+    from shutil import which
+    found = which("linux-wallpaperengine")
+    if found:
+        return found
+    for cand in (os.path.join(HOME, ".local/bin/linux-wallpaperengine"),
+                 "/usr/local/bin/linux-wallpaperengine",
+                 "/usr/bin/linux-wallpaperengine"):
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(HOME, ".local/bin/linux-wallpaperengine")
+
+
+ENGINE = _find_engine()
 
 # --- our own state ---------------------------------------------------------
 CONFIG_DIR = _env("WPE_CONFIG_DIR", os.path.join(HOME, ".config/wpe-studio"))

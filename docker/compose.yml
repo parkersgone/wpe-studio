@@ -38,3 +38,24 @@ services:
       - ${HOME}/.cache/wpe-studio:/cache:rw
     devices:
       - /dev/dri:/dev/dri
+
+  # Optional. `docker compose --profile translate up -d libretranslate` turns on
+  # a real translation service; wpe-studio finds it on :5010 and prefers it over
+  # the Ollama fallback. Port 5010 because postiz already holds 5000.
+  # First start downloads the language models it is told to load.
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    container_name: wpe-libretranslate
+    profiles: ["translate"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5010:5000"
+    environment:
+      - LT_LOAD_ONLY=en,zh,ja,ko,ru,de,fr,es
+      - LT_DISABLE_WEB_UI=true
+      - LT_UPDATE_MODELS=false
+    volumes:
+      - libretranslate-models:/home/libretranslate/.local/share/argos-translate
+
+volumes:
+  libretranslate-models:

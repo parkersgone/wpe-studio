@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""wpe-tray -- the panel icon.
+
+Wallpaper Engine's Windows build puts a tray icon up under Proton and clicking
+it opens the Windows UI, which cannot render anything here. This replaces it:
+same place on the panel, but it drives the Linux renderer.
+
+Three tray APIs exist and which one works depends on the panel:
+
+  AyatanaAppIndicator3  the modern one, what Cinnamon's systray applet speaks
+  XApp.StatusIcon       Cinnamon/XFCE native, better menu behaviour where present
+  Gtk.StatusIcon        deprecated everywhere, still the only thing some panels
+                        have
+
+It tries them in that order rather than assuming, because "no icon appears and
+no error is printed" is the worst possible outcome for a tray app.
+"""
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wpestudio import paths  # noqa: E402
+
+HOST = os.environ.get("WPE_BIND", "127.0.0.1")
+PORT = int(os.environ.get("WPE_PORT", "8014"))
+BASE = "http://%s:%d" % (HOST, PORT)
+SELF = os.path.join(paths.BIN_DIR, "wpe-studio")
+# The app's own logo is a saturated blue square; beside a panel of flat
+# monochrome glyphs it reads as a sticker rather than a tray icon. Use a
+# symbolic one on the same 16px grid. WPE_TRAY_ICON overrides.
+ICON_DIR = os.path.join(paths.ROOT, "assets")
+ICON_STEM = "wpe-tray"              # assets/wpe-tray.png
+# Installed into the user's icon theme by install_icon(); the tray APIs want a
+# theme NAME, not a file path -- passing a path silently shows nothing.
+THEME_NAME = "wpe-studio-tray"   # NOT -symbolic: that name puts GTK on the
+                                 # symbolic recolour path, which needs a specific
+                                 # SVG shape and otherwise paints nothing at all
+USER_ICONS = os.path.expanduser("~/.local/share/icons/hicolor")
+
+
+def install_icon():
+    """Put our icon in the user icon theme, if it is not already there.
+
+    XApp and AppIndicator both resolve icons by theme name. An absolute path is
+    accepted by the API and then quietly renders nothing, which is a miserable
+    thing to debug, so the icon has to actually be in a theme.
+    """
+    target = os.path.join(USER_ICONS, "22x22", "status", THEME_NAME + ".png")
+    source = os.path.join(ICON_DIR, ICON_STEM + ".png")
+
+    if os.path.exists(target) or not os.path.exists(source):
+        return
+
+    try:
+        for size in ("22x22", "24x24"):
+            d = os.path.join(USER_ICONS, size, "status")
+            os.makedirs(d, exist_ok=True)
+            shutil.copyfile(source, os.path.join(d, THEME_NAME + ".png"))
+
+        svg = os.path.join(ICON_DIR, ICON_STEM + ".svg")
+        if os.path.exists(svg):
+            d = os.path.join(USER_ICONS, "scalable", "status")
+            os.makedirs(d, exist_ok=True)
+            shutil.copyfile(svg, os.path.join(d, THEME_NAME + ".svg"))
+
+        subprocess.run(["gtk-update-icon-cache", "-f", "-t", USER_ICONS],
+                       capture_output=True)
+    except OSError:
+        pass
+
+
+def icon_name():
+    """An icon NAME, plus a theme path for it.
+
+    AppIndicator resolves names against icon theme paths; handing it an
+    absolute file path works by accident for some formats and silently shows
+    nothing for others -- an absolute .svg produced no icon at all. So publish
+    the assets directory as a theme path and pass a bare name.
+    """
+    override = os.environ.get("WPE_TRAY_ICON")
+    if override:
+        return override
+    if os.path.exists(os.path.join(USER_ICONS, "22x22", "status", THEME_NAME + ".png")):
+        return THEME_NAME
+    return "preferences-desktop-wallpaper"
+
+
+def icon_path():
+    """Absolute path to the icon file, for the APIs that want one."""
+    override = os.environ.get("WPE_TRAY_ICON")
+    if override:
+        return override
+    png = os.path.join(ICON_DIR, ICON_STEM + ".png")
+    return png if os.path.exists(png) else "preferences-desktop-wallpaper"
+
+
+def api(path, body=None, timeout=8):
+    req = urllib.request.Request(
+        BASE + path, method="POST" if body is not None else "GET",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw else {}
+    except Exception:
+        return None
+
+
+def ensure_server():
+    if api("/api/status", timeout=1) is not None:
+        return
+    subprocess.Popen([SELF, "--server"], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def open_ui(_w=None, tab=""):
+    cmd = [SELF] + (["--tab", tab] if tab else [])
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def main():
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk, GLib
+
+    install_icon()
+    ensure_server()
+
+    def build_menu():
+        menu = Gtk.Menu()
+
+        def item(label, fn, sensitive=True):
+            mi = Gtk.MenuItem(label=label)
+            mi.set_sensitive(sensitive)
+            if fn:
+                mi.connect("activate", fn)
+            menu.append(mi)
+            return mi
+
+        status = api("/api/status") or {}
+        mons = status.get("monitors") or []
+        running = next((m for m in mons if m.get("running")), None)
+        item(running and ("▶  %s" % (running.get("title") or running["id"])[:40])
+             or "Nothing running", None, sensitive=False)
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item("Open Wallpaper Engine", lambda _w: open_ui())
+        item("Browse the Workshop", lambda _w: open_ui(tab="workshop"))
+        menu.append(Gtk.SeparatorMenuItem())
+
+        # Favourites first, then the most recently added, so the menu is short
+        # and useful rather than a dump of the whole library.
+        state = api("/api/state") or {}
+        lib = api("/api/library") or []
+        by_id = {i["id"]: i for i in lib}
+        favs = [by_id[i] for i in (state.get("favorites") or []) if i in by_id]
+        recent = [i for i in lib if i["id"] not in {f["id"] for f in favs}][:5]
+        for it in (favs + recent)[:8]:
+            wid = it["id"]
+            item("   " + it["title"][:44],
+                 lambda _w, wid=wid: api("/api/apply", {"id": wid}))
+
+        menu.append(Gtk.SeparatorMenuItem())
+        item("Stop wallpaper", lambda _w: api("/api/stop", {}))
+        item("Restore last", lambda _w: subprocess.Popen(
+            [os.path.join(paths.BIN_DIR, "wpe-apply"), "--restore"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True))
+        menu.append(Gtk.SeparatorMenuItem())
+        item("Quit tray", lambda _w: Gtk.main_quit())
+
+        menu.show_all()
+        return menu
+
+    icon = icon_name()
+    attached = None
+
+    # 1. AppIndicator with an ABSOLUTE PNG PATH. This is the combination that
+    # actually renders on this panel. Every theme-name variant was accepted by
+    # the API and then painted nothing -- including names GTK's own
+    # IconTheme.lookup_icon resolved correctly, which makes it very easy to
+    # convince yourself it should be working.
+    try:
+        gi.require_version("AyatanaAppIndicator3", "0.1")
+        from gi.repository import AyatanaAppIndicator3 as AppIndicator
+        ind = AppIndicator.Indicator.new(
+            "wpe-studio", icon_path(), AppIndicator.IndicatorCategory.APPLICATION_STATUS)
+        ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+        ind.set_title("Wallpaper Engine")
+        ind.set_menu(build_menu())
+        GLib.timeout_add_seconds(20, lambda: (ind.set_menu(build_menu()), True)[1])
+        attached = "AyatanaAppIndicator3"
+        globals()["_keepalive"] = ind
+    except Exception as e:
+        sys.stderr.write("wpe-tray: appindicator unavailable (%s)\n" % e)
+
+    # 2. XApp.StatusIcon -- native on Cinnamon and XFCE, wants a theme name.
+    if attached is None:
+        try:
+            gi.require_version("XApp", "1.0")
+            from gi.repository import XApp
+            si = XApp.StatusIcon()
+            si.set_icon_name(icon)
+            si.set_tooltip_text("Wallpaper Engine")
+            si.set_primary_menu(build_menu())
+            si.connect("activate", lambda *_a: open_ui())
+            GLib.timeout_add_seconds(
+                20, lambda: (si.set_primary_menu(build_menu()), True)[1])
+            attached = "XApp.StatusIcon"
+            globals()["_keepalive"] = si
+        except Exception as e:
+            sys.stderr.write("wpe-tray: xapp unavailable (%s)\n" % e)
+
+    # 3. The deprecated one, because some panels still have nothing else.
+    if attached is None:
+        si = Gtk.StatusIcon()
+        png = os.path.join(ICON_DIR, icon + ".png")
+        if icon.startswith("/"):
+            si.set_from_file(icon)
+        elif os.path.exists(png):
+            si.set_from_file(png)
+        else:
+            si.set_from_icon_name(icon)
+        si.set_tooltip_text("Wallpaper Engine")
+        si.connect("activate", lambda *_a: open_ui())
+        si.connect("popup-menu", lambda _i, button, time:
+                   build_menu().popup(None, None, None, None, button, time))
+        attached = "Gtk.StatusIcon"
+
+    print("wpe-tray: using %s" % attached, flush=True)
+    signal.signal(signal.SIGINT, lambda *_a: Gtk.main_quit())
+    signal.signal(signal.SIGTERM, lambda *_a: Gtk.main_quit())
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -19,13 +19,14 @@ import os
 import posixpath
 import random
 import re
+import subprocess
 import secrets
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import engine, library, lockscreen, paths, state, steamio
+from . import deps, desktop, engine, library, paths, state, steamio, translate
 
 HOST = os.environ.get("WPE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WPE_PORT", "8014"))
@@ -131,8 +132,8 @@ def _bootstrap():
         "monitors": engine.monitors(),
         "library": library.scan(),
         "skins": SKINS,
-        "saver": lockscreen.status(),
         "steam": steamio.hook_status(),
+        "translate": translate.available(),
         # In a container the session-level things (gsettings, xdg-open,
         # systemctl --user, ask-sudo) would act on the container, not on his
         # desktop. The UI greys them out rather than appearing to work.
@@ -271,12 +272,18 @@ class Handler(BaseHTTPRequestHandler):
             if not it:
                 return self._send(404, {"error": "unknown"})
             st = state.load()
+            props = library.properties(wid, st["props"].get(str(wid), {}))
+            description = it["description"]
+            if st["global"].get("translate"):
+                description = translate.apply_to_properties(props, description)
             return self._send(200, {
-                "item": dict(it, size=library.size_of(wid)),
-                "properties": library.properties(wid, st["props"].get(str(wid), {})),
+                "item": dict(it, size=library.size_of(wid), description=description),
+                "properties": props,
                 "overrides": st["props"].get(str(wid), {}),
                 "presets": list((st["presets"].get(str(wid)) or {}).keys()),
                 "favorite": str(wid) in st["favorites"],
+                # Whether this wallpaper's options can do anything at all here.
+                "script_driven": library.script_driven(wid),
             })
         if p == "/api/workshop":
             return self._send(200, steamio.browse(
@@ -286,8 +293,10 @@ class Handler(BaseHTTPRequestHandler):
             ))
         if p == "/api/steam":
             return self._send(200, steamio.hook_status())
-        if p == "/api/saver":
-            return self._send(200, lockscreen.status())
+        if p == "/api/deps":
+            return self._send(200, deps.report())
+        if p == "/api/translate":
+            return self._send(200, translate.available())
         if p == "/api/log":
             mon = (q.get("monitor") or [engine.monitors()[0]["name"]])[0]
             return self._send(200, {"log": engine.tail_log(mon, 200)})
@@ -427,21 +436,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": steamio.open_url(b.get("url"))})
             return self._send(400, {"error": "unknown action"})
 
-        if p == "/api/saver":
-            action = b.get("action")
-            if action == "test":
-                return self._send(200, lockscreen.test())
-            if action == "disable":
-                return self._send(200, lockscreen.disable())
-            if action == "login_background":
-                return self._send(200, lockscreen.pop_login_installer())
-            return self._send(200, lockscreen.enable(
-                wallpaper_id=b.get("id"),
-                timeout_min=b.get("timeout_min"),
-                lock=b.get("lock", True),
-                login_background=b.get("login_background"),
-            ))
-
         if p == "/api/desktop-icons":
             engine.set_desktop_icons(bool(b.get("on")))
             return self._send(200, {"ok": True, "on": engine.desktop_icons_on()})
@@ -453,6 +447,26 @@ class Handler(BaseHTTPRequestHandler):
                 st["global"]["autostart"] = on
             state.update(_f)
             return self._send(200, {"ok": True, "on": on, "path": path})
+
+        if p == "/api/install-deps":
+            r = deps.report()
+            cmd = r["install_command"]
+            if not cmd:
+                return self._send(200, {"ok": False, "error": "nothing to install"})
+            ask = "/ai/bin/ask-sudo"
+            if not os.path.exists(ask):
+                return self._send(200, {"ok": False, "command": cmd,
+                                        "error": "ask-sudo not found; run it yourself"})
+            # ask-sudo's title is a FLAG; positional makes it the command.
+            subprocess.Popen([ask, "--title", "wpe-studio - install dependencies",
+                              "bash", "-c", cmd], start_new_session=True)
+            return self._send(200, {"ok": True, "popped": True, "command": cmd})
+
+        if p == "/api/walkthrough-done":
+            def _f(st):
+                st["global"]["seen_walkthrough"] = True
+            state.update(_f)
+            return self._send(200, {"ok": True})
 
         if p == "/api/rescan":
             return self._send(200, {"ok": True, "items": library.scan(force=True)})

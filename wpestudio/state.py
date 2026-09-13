@@ -32,6 +32,8 @@ DEFAULTS = {
         "skin": "dark",
         "autostart": True,
         "restore_on_launch": True,
+        "translate": False,          # run non-Latin labels through a local model
+        "seen_walkthrough": False,
     },
     "monitors": {},     # name -> {"id": str|None}
     "props": {},        # wallpaper id -> {prop: value}
@@ -40,13 +42,6 @@ DEFAULTS = {
     "incompatible": {},   # wallpaper id -> last failure, set by engine.apply
     "playlists": {},    # name -> {"items": [ids], "interval_min": 30, "order": "sequential"}
     "active_playlist": None,
-    "screensaver": {
-        "enabled": False,
-        "wallpaper_id": None,
-        "timeout_min": 10,
-        "lock": True,
-        "login_background": False,
-    },
     "filters": {},
 }
 

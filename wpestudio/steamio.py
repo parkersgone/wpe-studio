@@ -41,8 +41,18 @@ def is_flatpak():
 
 
 def steam_running():
-    r = subprocess.run(["pgrep", "-f", "ubuntu12_32/steam"], capture_output=True)
-    return r.returncode == 0
+    """Is the Steam client itself up?
+
+    NOT `pgrep -f ubuntu12_32/steam`: linux-wallpaperengine is launched with an
+    --assets-dir under the Steam tree, so that pattern matches a running
+    wallpaper and reports Steam as up when it is closed. Match the process
+    NAME, which only the client itself has.
+    """
+    for pattern in ("^steam$", "^steamwebhelper$"):
+        if subprocess.run(["pgrep", "-x", pattern.strip("^$")],
+                          capture_output=True).returncode == 0:
+            return True
+    return False
 
 
 def userdata_ids():

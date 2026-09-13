@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""wpe-translate -- install the offline translation packs.
+
+    wpe-translate status
+    wpe-translate list
+    wpe-translate install zh ja ko
+    wpe-translate remove ru
+    wpe-translate test "初始衣物状态"
+
+Sets up a small venv with ctranslate2 and sentencepiece, then downloads Argos
+language packs into it. Deliberately NOT `pip install argostranslate`, which
+comes to 5.9 GB: ctranslate2's wheel hard-depends on the CUDA runtime that CPU
+inference never loads, and argostranslate needs stanza, which needs torch. The
+models themselves are the only part that does any work, and an .argosmodel is
+just a zip with a CTranslate2 model and a sentencepiece vocabulary in it.
+
+    runtime                 ~206 MB, once
+    zh / ja / ko packs      ~309 MB
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.request
+import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wpestudio import translate  # noqa: E402
+
+DIR = translate.ARGOS_DIR
+VENV = translate.ARGOS_VENV
+INDEX_CACHE = os.path.join(DIR, "index.json")
+# argos-net.com returns 403 to Python's default urllib user agent.
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) wpe-studio"}
+
+
+def fetch(url, timeout=600):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=UA),
+                                  timeout=timeout)
+
+
+def human(n):
+    return "%.0f MB" % (n / 1e6) if n else "?"
+
+
+def load_index(refresh=False):
+    os.makedirs(DIR, exist_ok=True)
+    if not refresh and os.path.exists(INDEX_CACHE):
+        try:
+            with open(INDEX_CACHE, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            pass
+    with fetch(translate.ARGOS_INDEX, timeout=30) as r:
+        data = json.load(r)
+    with open(INDEX_CACHE, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    return data
+
+
+def to_english(index):
+    """{lang code: (name, url)} for everything that translates into English."""
+    out = {}
+    for p in index:
+        if p.get("to_code") != "en":
+            continue
+        links = p.get("links") or ([p["link"]] if p.get("link") else [])
+        if not links:
+            continue
+        out.setdefault(p["from_code"], (p.get("from_name") or p["from_code"], links[0]))
+    return out
+
+
+def ensure_venv():
+    py = translate.argos_python()
+    if py:
+        return py
+    os.makedirs(DIR, exist_ok=True)
+    print("creating the translation venv (one time, ~206 MB)")
+    subprocess.run([sys.executable, "-m", "venv", VENV], check=True)
+    pip = os.path.join(VENV, "bin", "pip")
+    # --no-deps on ctranslate2 is the whole point: its metadata requires the
+    # CUDA runtime, which CPU inference never touches.
+    subprocess.run([pip, "-q", "install", "--no-deps", "ctranslate2"], check=True)
+    subprocess.run([pip, "-q", "install", "sentencepiece", "numpy", "pyyaml"], check=True)
+    return translate.argos_python()
+
+
+def install(codes):
+    index = to_english(load_index())
+    ensure_venv()
+    os.makedirs(DIR, exist_ok=True)
+    for code in codes:
+        if code not in index:
+            print("no pack for %r into English" % code)
+            continue
+        name, url = index[code]
+        dest_zip = os.path.join(DIR, os.path.basename(url))
+        print("downloading %s (%s)…" % (name, code), flush=True)
+        with fetch(url) as r, open(dest_zip, "wb") as fh:
+            shutil.copyfileobj(r, fh)
+        with zipfile.ZipFile(dest_zip) as z:
+            root = z.namelist()[0].split("/")[0]
+            target = os.path.join(DIR, root)
+            if os.path.isdir(target):
+                shutil.rmtree(target)
+            # stanza/ is the sentence splitter, which needs torch. UI labels are
+            # single phrases, so it is dead weight -- skip it on extract.
+            members = [n for n in z.namelist() if "/stanza/" not in n]
+            z.extractall(DIR, members=members)
+        os.remove(dest_zip)
+        print("  installed %s -> %s" % (code, target))
+    status()
+
+
+def remove(codes):
+    packs = translate.argos_installed()
+    for code in codes:
+        d = packs.get(code)
+        if not d:
+            print("%s not installed" % code)
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        print("removed", code)
+    status()
+
+
+def dir_size(path):
+    total = 0
+    for base, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(base, f))
+            except OSError:
+                pass
+    return total
+
+
+def status():
+    info = translate.available()
+    print("\nprovider in use : %s" % (info["provider"] or "none"))
+    print("argos runtime   : %s" % (VENV if info["argos_runtime"] else "not installed"))
+    packs = translate.argos_installed()
+    if packs:
+        print("packs:")
+        for code, d in sorted(packs.items()):
+            print("   %-4s %8s  %s" % (code, human(dir_size(d)), d))
+    else:
+        print("packs           : none")
+    if info["argos_runtime"]:
+        print("on disk         : %s" % human(dir_size(DIR)))
+    print("ollama          : %s" % ("up" if info["ollama_up"] else "not reachable"))
+
+
+def listing():
+    index = to_english(load_index())
+    have = translate.argos_installed()
+    print("%-5s %-14s %s" % ("CODE", "LANGUAGE", "INSTALLED"))
+    for code, (name, _url) in sorted(index.items(), key=lambda kv: kv[1][0]):
+        print("%-5s %-14s %s" % (code, name[:14], "yes" if code in have else ""))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("status")
+    sub.add_parser("list")
+    p = sub.add_parser("install"); p.add_argument("codes", nargs="+")
+    p = sub.add_parser("remove"); p.add_argument("codes", nargs="+")
+    p = sub.add_parser("test"); p.add_argument("text", nargs="+")
+    args = ap.parse_args()
+
+    if args.cmd == "install":
+        install(args.codes)
+    elif args.cmd == "remove":
+        remove(args.codes)
+    elif args.cmd == "list":
+        listing()
+    elif args.cmd == "test":
+        out = translate.translate_many(args.text)
+        for src in args.text:
+            print("%s -> %s" % (src, out.get(src, "(unchanged)")))
+    else:
+        status()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -88,6 +88,11 @@ def _sources():
     out = []
     if os.path.isdir(paths.WORKSHOP):
         out.append(("workshop", paths.WORKSHOP))
+    # Games commonly live on a second drive even when Steam itself does not.
+    for base in paths.extra_library_folders():
+        extra = os.path.join(base, "steamapps/workshop/content/431960")
+        if os.path.isdir(extra):
+            out.append(("workshop", extra))
     for sub, tag in (("defaultprojects", "default"), ("myprojects", "local")):
         p = os.path.join(paths.WPE_PROJECTS, sub)
         if os.path.isdir(p):
@@ -200,6 +205,103 @@ def get(wid):
 def size_of(wid):
     it = get(wid)
     return _dirsize(it["dir"]) if it else 0
+
+
+# --- script-driven wallpapers -------------------------------------------------
+#
+# Wallpaper Engine scenes can react to their own settings in two ways. Some map
+# a property straight onto something the renderer understands -- a material
+# colour, a layer's visibility, a shader constant -- and those work here. Others
+# route everything through a scene-level JavaScript hook:
+#
+#     export function applyUserProperties(changedUserProperties) { ... }
+#
+# linux-wallpaperengine runs QuickJS for per-layer scripts but does not host the
+# scene-level user-property hook, so on those wallpapers every option is inert:
+# the value is stored, passed on the command line, and logged as applied
+# ("Applying override value for cloth_show"), and nothing consumes it.
+#
+# That is indistinguishable from a bug unless the UI says so, which is what
+# this is for. The marker is looked for inside the packed scene, the answer is
+# cached against the file's size and mtime, and the scan is lazy because
+# scene.pkg is routinely hundreds of megabytes.
+
+SCRIPT_MARKERS = (b"applyUserProperties", b"createScriptProperties")
+_script_cache = None
+
+
+def _script_cache_path():
+    return os.path.join(paths.CONFIG_DIR, "script-driven.json")
+
+
+def _load_script_cache():
+    global _script_cache
+    if _script_cache is None:
+        try:
+            with open(_script_cache_path(), encoding="utf-8") as fh:
+                _script_cache = json.load(fh)
+        except Exception:
+            _script_cache = {}
+    return _script_cache
+
+
+def _save_script_cache():
+    try:
+        with open(_script_cache_path(), "w", encoding="utf-8") as fh:
+            json.dump(_script_cache, fh)
+    except OSError:
+        pass
+
+
+def _scan_for_markers(path, chunk=8 << 20):
+    """Stream the file looking for any marker, overlapping the chunk boundary."""
+    longest = max(len(m) for m in SCRIPT_MARKERS)
+    try:
+        with open(path, "rb") as fh:
+            tail = b""
+            while True:
+                block = fh.read(chunk)
+                if not block:
+                    return False
+                window = tail + block
+                if any(m in window for m in SCRIPT_MARKERS):
+                    return True
+                tail = window[-(longest - 1):] if longest > 1 else b""
+    except OSError:
+        return False
+
+
+def script_driven(wid, scan=True):
+    """True / False, or None when it has not been checked and scan=False."""
+    it = get(wid)
+    if not it or it["type"] not in ("scene", "preset"):
+        return False
+    target, _vals = resolve_target(wid)
+    if not target:
+        return False
+
+    candidates = [os.path.join(target["dir"], n)
+                  for n in ("scene.pkg", "scene.json")]
+    candidates = [c for c in candidates if os.path.exists(c)]
+    if not candidates:
+        return False
+
+    try:
+        st = os.stat(candidates[0])
+        key = "%s:%d:%d" % (target["id"], st.st_size, int(st.st_mtime))
+    except OSError:
+        return False
+
+    cache = _load_script_cache()
+    if key in cache:
+        return cache[key]
+    if not scan:
+        return None
+
+    found = any(_scan_for_markers(c) for c in candidates)
+    cache[key] = found
+    _save_script_cache()
+    return found
 
 
 # --- properties -------------------------------------------------------------

@@ -15,7 +15,6 @@
     <button class="tab active" data-view="installed">Installed</button>
     <button class="tab" data-view="workshop">Workshop</button>
     <button class="tab" data-view="playlists">Playlists</button>
-    <button class="tab" data-view="screensaver">Lock screen</button>
     <button class="tab" data-view="settings">Settings</button>
   </nav>
   <div class="titleactions">
@@ -126,57 +125,12 @@
     </div>
   </section>
 
-  <!-- ── LOCK SCREEN ──────────────────────────────────────────────── -->
-  <section class="view" data-view="screensaver">
-    <div class="pane">
-      <h2>Lock screen</h2>
-      <div id="envnote2" hidden></div>
-      <div class="warnbox" style="color:#ffd9a8;background:rgba(255,92,0,.10);border-color:#ff5c00">
-        <b>Live wallpapers do not animate on the lock screen.</b><br>
-        cinnamon-screensaver takes an image, not a running process, so one frame is
-        captured from the wallpaper and shown as a still. Scene, video and web
-        wallpapers all end up frozen there. The desktop keeps animating normally.
-      </div>
-      <p class="muted">Mint's own lock screen handles the password. This only changes
-        what is behind it.</p>
-
-      <div class="settingrow">
-        <div><b>Background</b><div class="muted">One frame is captured from this wallpaper.
-          This is also the desktop's static background, which you only see if the live
-          wallpaper is stopped.</div></div>
-        <select id="saverWallpaper"></select>
-      </div>
-      <div class="settingrow">
-        <div><b>Idle timeout</b><div class="muted">Inactivity before the screen locks.</div></div>
-        <span><input id="saverTimeout" type="number" min="1" max="240" value="10" style="width:80px"> minutes</span>
-      </div>
-      <div class="settingrow">
-        <div><b>Require password</b></div>
-        <label class="switch"><input type="checkbox" id="saverLock" checked><span></span></label>
-      </div>
-
-      <div class="row">
-        <button class="btn primary" id="saverEnable">Apply</button>
-        <button class="btn" id="saverTest">Lock now</button>
-        <button class="btn danger" id="saverDisable">Restore previous background</button>
-      </div>
-
-      <h2>Login screen</h2>
-      <p class="muted">LightDM runs before your session, so it cannot show a live
-        wallpaper. The same still frame can be installed as the greeter background.
-        Requires root once.</p>
-      <div class="row">
-        <button class="btn" id="saverLogin">Set login background</button>
-      </div>
-
-      <div id="saverStatus" class="statusbox"></div>
-    </div>
-  </section>
-
   <!-- ── SETTINGS ─────────────────────────────────────────────────── -->
   <section class="view" data-view="settings">
     <div class="pane">
       <div id="envnote" hidden></div>
+      <div class="cols">
+      <div class="group">
       <h2>General</h2>
       <div class="settingrow"><div><b>Frame rate limit</b><div class="muted">Lower reduces GPU load and fan noise.</div></div>
         <span class="sliderwrap"><input type="range" id="setFps" min="5" max="144" step="1"><output id="outFps"></output></span></div>
@@ -191,6 +145,9 @@
       <div class="settingrow"><div><b>Pause when an app is fullscreen</b></div>
         <label class="switch"><input type="checkbox" id="setPause"><span></span></label></div>
 
+      </div>
+
+      <div class="group">
       <h2>Rendering</h2>
       <div class="settingrow"><div><b>Scaling</b></div>
         <select id="setScaling"><option>default</option><option>stretch</option><option>fit</option><option>fill</option></select></div>
@@ -203,6 +160,9 @@
       <div class="settingrow"><div><b>Parallax</b></div>
         <label class="switch"><input type="checkbox" id="setParallax"><span></span></label></div>
 
+      </div>
+
+      <div class="group">
       <h2>Desktop</h2>
       <div class="settingrow"><div><b>Restore wallpaper at login</b></div>
         <label class="switch"><input type="checkbox" id="setAutostart"><span></span></label></div>
@@ -211,6 +171,9 @@
           Leave off unless the desktop is intentionally blank.</div></div>
         <label class="switch"><input type="checkbox" id="setIcons"><span></span></label></div>
 
+      </div>
+
+      <div class="group">
       <h2>Steam</h2>
       <div class="settingrow"><div><b>Override Steam's Play button</b>
         <div class="muted" id="steamHint"></div></div>
@@ -220,15 +183,29 @@
         <button class="btn" id="btnSteamWs">Open the Workshop in Steam</button>
       </div>
 
+      </div>
+
+      <div class="group">
       <h2>Appearance</h2>
       <div class="settingrow"><div><b>Skin</b></div><select id="setSkin"></select></div>
+      <div class="settingrow">
+        <div><b>Translate labels to English</b>
+          <div class="muted" id="translateHint"></div></div>
+        <label class="switch"><input type="checkbox" id="setTranslate"><span></span></label>
+      </div>
 
+      </div>
+
+      <div class="group">
       <h2>Diagnostics</h2>
       <div class="row">
         <button class="btn subtle" id="btnLog">Engine log</button>
         <button class="btn subtle" id="btnPaths">Paths</button>
+        <button class="btn subtle" id="btnWalkthrough">Run setup walkthrough</button>
       </div>
       <pre id="diag" class="diag"></pre>
+      </div>
+      </div>
     </div>
   </section>
 </main>
@@ -239,6 +216,25 @@
   <div class="spacer"></div>
   <button class="btn danger" id="btnStop"><i class="fa">&#xf04d;</i> Stop</button>
 </footer>
+
+<!-- First-run walkthrough. Overlays the app rather than replacing it, so the
+     library is visible behind and it never feels like a separate installer. -->
+<div class="wt" id="wt" hidden>
+  <div class="wtcard">
+    <div class="wtsteps" id="wtSteps"></div>
+    <div class="wtbody">
+      <h2 id="wtTitle"></h2>
+      <div id="wtText"></div>
+      <div id="wtCheck" class="wtcheck"></div>
+    </div>
+    <div class="wtfoot">
+      <button class="btn subtle" id="wtSkip">Skip setup</button>
+      <span class="spacer"></span>
+      <button class="btn" id="wtBack">Back</button>
+      <button class="btn primary" id="wtNext">Next</button>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 <script src="/app.js"></script>
