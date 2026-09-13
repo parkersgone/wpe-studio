@@ -18,28 +18,48 @@ browser and can be put behind the remote dashboard.
 ## What it runs on
 
 Built and used on **Linux Mint 22 / Cinnamon / X11**. It is not tied to Mint,
-but it is tied to X11, and the desktop-integration parts differ per desktop:
+and no longer tied to X11.
+
+| | X11 | Wayland |
+|---|---|---|
+| render the wallpaper | any window manager | compositors with `wlr-layer-shell` |
+| how | ordinary window, demoted to the desktop layer | the compositor's background layer |
+| needs | `xrandr`, `wmctrl`, `xprop`, `xdotool` | `wlr-randr` |
+
+The two paths are genuinely different, not one with a flag. On X11 the engine
+opens a normal window at the monitor's rectangle and we demote it with
+`wmctrl`/`xprop`; `--screen-root` exists but renders *under* the desktop that
+Cinnamon and friends already draw on the root window, so it is invisible. On
+Wayland `--screen-root` asks the compositor for the background layer directly,
+there is no root window to hide behind, and nothing to demote. Monitor
+discovery differs too: `xrandr` under XWayland describes XWayland's single
+rectangle, not the real outputs, so Wayland goes through `wlr-randr`.
+
+Tested end to end on a nested sway session — scene, video and web all render on
+the background layer, and stopping matches by output name rather than by
+geometry.
+
+**GNOME and KDE on Wayland cannot do this at all.** Neither implements
+`wlr-layer-shell` and there is no equivalent, so no external program can put a
+live wallpaper on the desktop. The UI says so rather than failing quietly. sway,
+Hyprland, river, Wayfire, labwc and niri are all fine. An X11 session on GNOME
+or KDE is also fine.
+
+Desktop integration still differs per desktop:
 
 | | Cinnamon | GNOME / Budgie | MATE | Xfce | KDE |
 |---|---|---|---|---|---|
-| render the wallpaper | yes | yes | yes | yes | yes |
-| lock screen background | yes | likely | yes | yes | no |
 | desktop-icons toggle | yes | yes | yes | manual | manual |
-| idle timeout / lock settings | yes | manual | manual | manual | manual |
-
-Rendering is X11-only. The whole approach is "take an ordinary window and demote
-it to the desktop layer", driven through `xrandr`, `wmctrl` and `xprop`.
-**On Wayland nothing will appear** — `linux-wallpaperengine` itself supports
-`wlr-layer-shell`, but this wrapper does not drive it yet.
 
 Everything environment-specific lives in `wpestudio/desktop.py`, and anything
 unsupported is reported in the UI rather than silently doing nothing. Adding a
 desktop is usually a row in the table there.
 
-Requirements: `linux-wallpaperengine`, Python 3.10+, `xrandr`/`wmctrl`/`xprop`/
-`xdotool`, ImageMagick (for the lock screen still), and Wallpaper Engine owned
-on Steam. GTK3 + WebKit2GTK for the app window; without them it opens in your
-browser instead.
+Requirements: `linux-wallpaperengine`, Python 3.10+, the session tools from the
+table above, and Wallpaper Engine owned on Steam. GTK3 + WebKit2GTK for the app
+window; without them it opens in your browser instead. The installer checks all
+of this and prints the one command that installs what is missing on your
+distro — and it only asks for the tools your session actually uses.
 
 ## Why it exists
 

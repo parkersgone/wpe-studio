@@ -18,9 +18,11 @@ it by hand:
 
 Order matters. Doing BELOW before removing ABOVE silently does nothing.
 """
+import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -50,7 +52,81 @@ def _run(cmd, **kw):
 _MON_RE = re.compile(r"^\s*(\d+):\s+\+?\*?(\S+)\s+(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)")
 
 
+def wayland():
+    return desktop.session_type() == desktop.WAYLAND
+
+
+def _wayland_monitors():
+    """Outputs as wlr-randr reports them.
+
+    xrandr under XWayland answers, but it answers about XWayland's own idea of
+    the screen, which is one rectangle covering everything. The engine needs
+    real output names to hand to --screen-root, so ask the compositor.
+    """
+    if not shutil.which("wlr-randr"):
+        return []
+    try:
+        r = _run(["wlr-randr", "--json"])
+        data = json.loads(r.stdout)
+    except Exception:
+        return _wlr_randr_text()
+
+    out = []
+    for i, o in enumerate(data):
+        if not o.get("enabled", True):
+            continue
+        mode = next((m for m in o.get("modes", []) if m.get("current")), None)
+        pos = o.get("position") or {}
+        out.append({
+            "index": i,
+            "name": o.get("name") or "output-%d" % i,
+            "width": int((mode or {}).get("width") or 1920),
+            "height": int((mode or {}).get("height") or 1080),
+            "x": int(pos.get("x") or 0),
+            "y": int(pos.get("y") or 0),
+            "primary": i == 0,
+        })
+    return out
+
+
+_WLR_LINE = re.compile(r"^(\S+)\s")
+_WLR_MODE = re.compile(r"(\d+)x(\d+)\s+px.*current", re.I)
+_WLR_POS = re.compile(r"Position:\s*(-?\d+),(-?\d+)")
+
+
+def _wlr_randr_text():
+    """wlr-randr without --json, for the versions that predate it."""
+    try:
+        r = _run(["wlr-randr"])
+    except Exception:
+        return []
+    out, cur = [], None
+    for line in r.stdout.splitlines():
+        if line and not line[0].isspace():
+            m = _WLR_LINE.match(line)
+            if m:
+                cur = {"index": len(out), "name": m.group(1), "width": 1920,
+                       "height": 1080, "x": 0, "y": 0, "primary": not out}
+                out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = _WLR_MODE.search(line)
+        if m:
+            cur["width"], cur["height"] = int(m.group(1)), int(m.group(2))
+        m = _WLR_POS.search(line)
+        if m:
+            cur["x"], cur["y"] = int(m.group(1)), int(m.group(2))
+    return out
+
+
 def monitors():
+    if wayland():
+        found = _wayland_monitors()
+        if found:
+            return found
+        # No wlr-randr: fall through to xrandr, which under XWayland at least
+        # gives a plausible single rectangle to render into.
     out = []
     try:
         r = _run(["xrandr", "--listmonitors"])
@@ -141,6 +217,29 @@ def _geometry_pids(geom):
 _GEOM_ARG = re.compile(r"^\d+x\d+x\d+x\d+$")
 
 
+def _screen_root_pids(name):
+    """Every engine process rendering to this Wayland output."""
+    out = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open("/proc/%d/comm" % pid) as fh:
+                if fh.read().strip() != PROC_NAME:
+                    continue
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                args = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0")]
+        except OSError:
+            continue
+        for i, a in enumerate(args):
+            if a in ("--screen-root", "--screen-span") and i + 1 < len(args) \
+                    and name in args[i + 1].split(","):
+                out.append(pid)
+                break
+    return out
+
+
 def _orphan_pids():
     """Renderers drawing to a rectangle no monitor has any more.
 
@@ -164,6 +263,10 @@ def _orphan_pids():
                 args = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0")]
         except OSError:
             continue
+        if "--screen-root" in args or "--screen-span" in args:
+            # Named by output, not by rectangle; a stale name is the
+            # compositor's business, not ours.
+            continue
         geoms = [a for a in args if _GEOM_ARG.match(a)]
         if geoms and not any(g in live for g in geoms):
             out.append(pid)
@@ -182,6 +285,10 @@ def stop(mon=None, quiet=True):
         m = monitor(name)
         pids.update(_geometry_pids(
             "%dx%dx%dx%d" % (m["x"], m["y"], m["width"], m["height"])))
+        if wayland():
+            # Started with --screen-root <output>, so that name is what
+            # identifies it -- there is no geometry on the command line.
+            pids.update(_screen_root_pids(m["name"]))
         # Reap anything left painting a rectangle that no longer exists, on
         # every stop rather than only on a full one -- otherwise it survives
         # until the next reboot.
@@ -243,7 +350,20 @@ def build_argv(wid, mon, st=None, props=None, window=None, extra=None):
     m = monitor(mon)
     geom = window or "%dx%dx%dx%d" % (m["x"], m["y"], m["width"], m["height"])
 
-    argv = [paths.ENGINE, "--window", geom]
+    # Two different ways to be a wallpaper.
+    #
+    # X11: start an ordinary window at the monitor's rectangle and demote it to
+    # the desktop layer afterwards. --screen-root exists but renders UNDER the
+    # desktop that Cinnamon and friends already draw on the root window, so it
+    # is invisible.
+    #
+    # Wayland: --screen-root asks the compositor for the background layer via
+    # wlr-layer-shell, which is the actual supported mechanism. There is no
+    # root window to be hidden behind and nothing to demote.
+    if wayland() and not window:
+        argv = [paths.ENGINE, "--screen-root", m["name"]]
+    else:
+        argv = [paths.ENGINE, "--window", geom]
 
     scaling = g.get("scaling", "default")
     if scaling in SCALINGS:
@@ -412,7 +532,10 @@ def apply(wid, mon=None, props=None, persist=True, wait_window=True):
     #
     # The cost is both renderers being resident for that moment. On a small card
     # with two heavy scenes that is a real spike, so it can be turned off.
-    handover = bool(st["global"].get("fast_switch", True)) and wait_window
+    # On Wayland there is no X window to wait for, so the handover cannot be
+    # timed against one; the compositor swaps layer surfaces itself.
+    handover = bool(st["global"].get("fast_switch", True)) and wait_window \
+        and not wayland()
     previous = _geometry_pids(_geometry(mon)) if handover else []
 
     if not handover:
@@ -423,9 +546,14 @@ def apply(wid, mon=None, props=None, persist=True, wait_window=True):
     proc = subprocess.Popen(argv, env=_env(), stdout=log, stderr=log,
                             stdin=subprocess.DEVNULL, start_new_session=True)
 
-    win = _find_window(proc.pid, before=before) if wait_window else None
-    if win:
-        demote(win)
+    # Wayland surfaces are not X windows: there is nothing to find and nothing
+    # to demote, because the engine asked the compositor for the background
+    # layer instead of taking an ordinary window and pushing it down.
+    win = None
+    if wait_window and not wayland():
+        win = _find_window(proc.pid, before=before)
+        if win:
+            demote(win)
 
     if handover:
         # The new window is mapped last so it sits above the old one at the same

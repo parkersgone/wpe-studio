@@ -45,29 +45,29 @@ FAMILIES = {
 REQUIREMENTS = [
     {
         "key": "xrandr", "what": "xrandr",
-        "why": "reads your monitor layout",
-        "check": ("bin", "xrandr"),
+        "why": "reads your monitor layout (X11 only)",
+        "check": ("bin_unless_wayland", "xrandr"),
         "apt": "x11-xserver-utils", "dnf": "xrandr", "pacman": "xorg-xrandr",
         "zypper": "xrandr", "xbps": "xrandr", "apk": "xrandr", "eopkg": "xorg-xrandr",
     },
     {
         "key": "wmctrl", "what": "wmctrl",
-        "why": "demotes the wallpaper window to the desktop layer",
-        "check": ("bin", "wmctrl"),
+        "why": "demotes the wallpaper window to the desktop layer (X11 only)",
+        "check": ("bin_unless_wayland", "wmctrl"),
         "apt": "wmctrl", "dnf": "wmctrl", "pacman": "wmctrl",
         "zypper": "wmctrl", "xbps": "wmctrl", "apk": None, "eopkg": "wmctrl",
     },
     {
         "key": "xprop", "what": "xprop",
-        "why": "sets the window type so the wallpaper sits behind everything",
-        "check": ("bin", "xprop"),
+        "why": "sets the window type so the wallpaper sits behind everything (X11 only)",
+        "check": ("bin_unless_wayland", "xprop"),
         "apt": "x11-utils", "dnf": "xorg-x11-utils", "pacman": "xorg-xprop",
         "zypper": "xprop", "xbps": "xprop", "apk": "xprop", "eopkg": "xorg-xprop",
     },
     {
         "key": "xdotool", "what": "xdotool",
-        "why": "window geometry and input, used by the renderer hooks",
-        "check": ("bin", "xdotool"),
+        "why": "window geometry and input, used by the renderer hooks (X11 only)",
+        "check": ("bin_unless_wayland", "xdotool"),
         "apt": "xdotool", "dnf": "xdotool", "pacman": "xdotool",
         "zypper": "xdotool", "xbps": "xdotool", "apk": "xdotool", "eopkg": "xdotool",
     },
@@ -87,6 +87,15 @@ REQUIREMENTS = [
         "apt": "gir1.2-webkit2-4.1", "dnf": "webkit2gtk4.1",
         "pacman": "webkit2gtk-4.1", "zypper": "typelib-1_0-WebKit2-4_1",
         "xbps": "webkit2gtk", "apk": "webkit2gtk-4.1", "eopkg": "libwebkit-gtk3",
+    },
+    {
+        "key": "wlr-randr", "what": "wlr-randr",
+        "why": "reads your monitor layout on Wayland; only needed there",
+        "optional": True,
+        "check": ("bin_or_x11", "wlr-randr"),
+        "apt": "wlr-randr", "dnf": "wlr-randr", "pacman": "wlr-randr",
+        "zypper": "wlr-randr", "xbps": "wlr-randr", "apk": "wlr-randr",
+        "eopkg": None,
     },
     {
         "key": "tray", "what": "Tray icon support",
@@ -140,6 +149,21 @@ def distro():
 def _present(check):
     kind = check[0]
     if kind == "bin":
+        return bool(shutil.which(check[1]))
+    if kind == "bin_unless_wayland":
+        # X11-only tools. A Wayland session drives the compositor directly and
+        # never calls these, so do not ask anyone to install them.
+        from . import desktop
+        if desktop.session_type() == desktop.WAYLAND:
+            return True
+        return bool(shutil.which(check[1]))
+    if kind == "bin_or_x11":
+        # Wayland-only tools. On X11 there is nothing to install and nothing
+        # to warn about, so report them satisfied rather than listing a
+        # package the user does not need.
+        from . import desktop
+        if desktop.session_type() != desktop.WAYLAND:
+            return True
         return bool(shutil.which(check[1]))
     if kind == "gi":
         try:

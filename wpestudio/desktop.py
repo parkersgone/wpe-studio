@@ -7,10 +7,19 @@ instead of silently doing nothing.
 
 The honest support matrix:
 
-  rendering       X11 only. The whole approach is "take a normal window and
-                  demote it to the desktop layer", which is an X11 idea driven
-                  through xrandr/wmctrl/xprop. linux-wallpaperengine itself can
-                  do Wayland via wlr-layer-shell, but none of this wrapper can.
+  rendering       X11 everywhere, and Wayland on compositors that speak
+                  wlr-layer-shell (sway, Hyprland, river, Wayfire, labwc).
+                  The two paths are genuinely different: on X11 we start an
+                  ordinary window and demote it to the desktop layer with
+                  wmctrl/xprop, because that is the only thing that works
+                  under a desktop that already owns the root window. On
+                  Wayland the engine asks the compositor for the background
+                  layer directly and there is nothing to demote.
+
+                  GNOME and KDE do not implement wlr-layer-shell and have no
+                  equivalent, so a Wayland session on those cannot show a live
+                  wallpaper from any external program. That is said plainly
+                  rather than failing quietly.
   desktop icons   the file manager that owns the root window differs per
                   desktop; known for Cinnamon, GNOME, MATE and Xfce.
 """
@@ -31,6 +40,35 @@ def session_type():
     if os.environ.get("DISPLAY"):
         return X11
     return "unknown"
+
+
+# Compositors known to implement wlr-layer-shell, which is what the engine
+# needs for the background layer. Mutter and KWin deliberately do not.
+LAYER_SHELL_DESKTOPS = ("sway", "hyprland", "river", "wayfire", "labwc",
+                        "wlroots", "niri", "miracle", "qtile")
+LAYER_SHELL_NEVER = ("gnome", "kde")
+
+
+def layer_shell_likely():
+    """Does this Wayland compositor support the background layer?
+
+    There is no way to ask without connecting to the compositor, so go by who
+    it is. Getting this wrong in the optimistic direction just means the engine
+    fails with its own message; getting it wrong the other way would hide a
+    working setup, so unknown compositors are given the benefit of the doubt.
+    """
+    raw = " ".join(filter(None, (
+        os.environ.get("XDG_CURRENT_DESKTOP", ""),
+        os.environ.get("DESKTOP_SESSION", ""),
+        os.environ.get("XDG_SESSION_DESKTOP", ""),
+        os.environ.get("SWAYSOCK") and "sway" or "",
+        os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and "hyprland" or "",
+    ))).lower()
+    if any(k in raw for k in LAYER_SHELL_DESKTOPS):
+        return True
+    if any(k in raw for k in LAYER_SHELL_NEVER):
+        return False
+    return True
 
 
 def desktop_env():
@@ -114,19 +152,23 @@ def steam_note():
 
 def capabilities():
     de, session = desktop_env(), session_type()
-    render_ok = session == X11
+    wayland = session == WAYLAND
+    render_ok = (not wayland) or layer_shell_likely()
     return {
         "desktop": de,
         "session": session,
         "render": render_ok,
         "render_note": None if render_ok else
-            "This wrapper drives X11 windows directly (xrandr/wmctrl/xprop). "
-            "On Wayland nothing will appear, even though linux-wallpaperengine "
-            "itself supports wlr-layer-shell.",
+            "%s on Wayland does not implement wlr-layer-shell and has no "
+            "equivalent, so no external program can put a live wallpaper on "
+            "your desktop. Log in to an X11 session instead, or use a "
+            "compositor that supports it (sway, Hyprland, river, Wayfire)."
+            % de.upper() if de in LAYER_SHELL_NEVER else
+            "This compositor may not support the background layer.",
         "desktop_icons": icons_supported(),
         "desktop_icons_note": None if icons_supported() else
             "No known desktop-icons setting for this desktop. If icons cover the "
             "wallpaper, turn them off in your file manager's preferences.",
         "steam": steam_note(),
-        "tested_on": "Linux Mint 22 / Cinnamon / X11",
+        "tested_on": "Linux Mint 22 / Cinnamon / X11; Wayland tested on sway",
     }
