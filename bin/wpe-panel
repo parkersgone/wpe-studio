@@ -10,8 +10,8 @@ It is a separate process from the tray on purpose: the tray must stay
 responsive and must not die with the panel, and GTK does not enjoy a second
 WebKit view being created and destroyed repeatedly inside a long-lived process.
 
-Dismissal: Escape, clicking away (focus-out), or the server raising the
-close flag when "Open full app" is pressed.
+Dismissal: Escape, clicking the tray icon again, or "Open full app". Explicitly
+NOT click-away -- see the note further down.
 """
 import argparse
 import json
@@ -142,29 +142,13 @@ def main():
                 close() if Gdk.keyval_name(ev.keyval) == "Escape" else False)
 
     # Click-away dismissal, but ONLY after the window has actually held focus.
-    # A freshly mapped window emits focus-out before it is ever focused, so
-    # wiring this up naively closes the panel the instant it opens -- which
-    # looks exactly like it failed to launch.
-    # Two guards, because one is not enough. A freshly mapped window emits
-    # focus-out before it is ever focused; and on Cinnamon it can briefly take
-    # focus and hand it straight back to whatever launched it, which closed the
-    # panel a few hundred milliseconds after it appeared.
-    state = {"focused": False, "since": GLib.get_monotonic_time()}
-    grace_us = 1_500_000
-    autoclose = os.environ.get("WPE_PANEL_NO_AUTOCLOSE") != "1"
+    # No click-away dismissal. Applying a wallpaper spawns a renderer whose
+    # window takes focus before it is demoted, and no amount of grace period or
+    # re-checking reliably told that apart from the user clicking elsewhere --
+    # so the panel vanished every time you picked something and you could never
+    # try two in a row. It closes on Escape, on clicking the tray icon again
+    # (the tray tracks it by process handle), and on "Open full app".
 
-    def on_focus_in(*_a):
-        state["focused"] = True
-        return False
-
-    def on_focus_out(*_a):
-        settled = GLib.get_monotonic_time() - state["since"] > grace_us
-        if autoclose and state["focused"] and settled:
-            close()
-        return False
-
-    win.connect("focus-in-event", on_focus_in)
-    win.connect("focus-out-event", on_focus_out)
 
     # The page cannot close its own window, so it raises a flag on the daemon.
     GLib.timeout_add(400, lambda: (close() if should_close() else True))

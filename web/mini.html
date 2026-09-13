@@ -90,6 +90,23 @@ html,body{
 .quick .btn{padding:7px 0;font-size:14px;line-height:1}
 .quick .btn.on{background:var(--orange);border-color:var(--orange);color:#111}
 .tog.big{padding:7px 0;font-size:12.5px;color:var(--fg)}
+.sect{
+  display:flex;align-items:center;gap:6px;margin:12px 0 7px;
+  font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg3);
+}
+.sect::after{content:"";flex:1;height:1px;background:var(--line)}
+#props .p{margin-bottom:8px}
+#props .p>label{display:block;color:var(--fg2);font-size:10.5px;margin-bottom:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#props .p .row{display:flex;align-items:center;gap:6px}
+#props .p input[type=range]{flex:1;accent-color:var(--accent)}
+#props .p output{width:32px;text-align:right;color:var(--fg3);font-size:10px}
+#props .p input[type=color]{width:30px;height:18px;padding:0;border:1px solid var(--line);
+  background:var(--bg3);border-radius:3px}
+#props .p input[type=text],#props .p select{
+  width:100%;background:var(--bg3);border:1px solid var(--line);color:var(--fg);
+  border-radius:3px;padding:3px 5px;font:inherit;font-size:11px}
+#props .none{color:var(--fg3);font-size:10.5px}
 .opt{margin-bottom:9px}
 .opt label{display:block;color:var(--fg2);font-size:10.5px;margin-bottom:3px}
 .opt .row{display:flex;align-items:center;gap:6px}
@@ -167,6 +184,15 @@ html,body{
 
       <div class="opt"><label>Playlist</label>
         <select id="playlist"><option value="">Not running</option></select></div>
+
+      <!-- The running wallpaper's own settings, in the space that was empty.
+           Only the ones that are visible under their conditions and actually
+           editable; the asset pickers and group headers are noise at this
+           width. -->
+      <div id="propwrap" hidden>
+        <div class="sect">Wallpaper settings</div>
+        <div id="props"></div>
+      </div>
     </div>
     <div class="foot">
       <button class="btn danger" id="stop">Stop</button>
@@ -239,6 +265,7 @@ function render() {
       + pls.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
   }
   sel.value = want;
+  loadProps();
 }
 
 function bind(id, key, kind) {
@@ -329,6 +356,82 @@ $("#again").onclick = async () => {
   status = await api("/api/status");
   render();
 };
+
+// ── the running wallpaper's own settings ──────────────────────────────
+let propsFor = null;
+
+const toHex = (v) => "#" + String(v ?? "1 1 1").trim().split(/\s+/).slice(0, 3)
+  .map((x) => Math.round(Math.min(1, Math.max(0, parseFloat(x) || 0)) * 255)
+    .toString(16).padStart(2, "0")).join("");
+const toFloats = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return "1 1 1";
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    .map((x) => +(x / 255).toFixed(6)).join(" ");
+};
+
+async function loadProps() {
+  const id = currentId();
+  const wrap = $("#propwrap");
+  if (!id) { wrap.hidden = true; propsFor = null; return; }
+  if (propsFor === id) return;
+  propsFor = id;
+
+  const d = await api("/api/wallpaper/" + encodeURIComponent(id));
+  const list = (d.properties || []).filter(
+    (p) => p.visible && p.editable && p.type !== "group" && p.type !== "text");
+  wrap.hidden = false;
+
+  if (!list.length) {
+    $("#props").innerHTML = `<div class="none">This wallpaper has no settings.</div>`;
+    return;
+  }
+
+  $("#props").innerHTML = list.map((p) => {
+    const k = esc(p.key);
+    if (p.type === "bool")
+      return `<div class="p"><div class="tog"><span title="${esc(p.label)}">${esc(p.label)}</span>
+        <label class="switch"><input type="checkbox" data-p="${k}" ${p.value ? "checked" : ""}><span></span></label>
+      </div></div>`;
+    if (p.type === "slider")
+      return `<div class="p"><label title="${esc(p.label)}">${esc(p.label)}</label><div class="row">
+        <input type="range" data-p="${k}" min="${p.min}" max="${p.max}"
+               step="${p.step || (p.fraction ? 0.01 : 1)}" value="${p.value}">
+        <output>${p.value}</output></div></div>`;
+    if (p.type === "color")
+      return `<div class="p"><label title="${esc(p.label)}">${esc(p.label)}</label>
+        <input type="color" data-p="${k}" data-kind="color" value="${toHex(p.value)}"></div>`;
+    if (p.type === "combo")
+      return `<div class="p"><label title="${esc(p.label)}">${esc(p.label)}</label>
+        <select data-p="${k}">${(p.options || []).map((o) =>
+          `<option value="${esc(o.value)}" ${String(o.value) === String(p.value) ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select></div>`;
+    return `<div class="p"><label title="${esc(p.label)}">${esc(p.label)}</label>
+      <input type="text" data-p="${k}" value="${esc(p.value)}"></div>`;
+  }).join("");
+}
+
+let propTimer = null;
+$("#props").addEventListener("input", (e) => {
+  const el = e.target.closest("[data-p]");
+  if (!el) return;
+  if (el.type === "range") {
+    const o = el.parentElement.querySelector("output");
+    if (o) o.textContent = el.value;
+  }
+  clearTimeout(propTimer);
+  // Each push restarts the renderer, so coalesce a drag.
+  propTimer = setTimeout(async () => {
+    const out = {};
+    for (const x of document.querySelectorAll("#props [data-p]")) {
+      if (x.type === "checkbox") out[x.dataset.p] = x.checked;
+      else if (x.dataset.kind === "color") out[x.dataset.p] = toFloats(x.value);
+      else if (x.type === "range") out[x.dataset.p] = parseFloat(x.value);
+      else out[x.dataset.p] = x.value;
+    }
+    await api("/api/props", { id: propsFor, props: out, apply: true });
+  }, 700);
+});
 
 $("#playlist").onchange = async (e) => {
   const name = e.target.value;

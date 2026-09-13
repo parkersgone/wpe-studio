@@ -19,6 +19,7 @@ import os
 import posixpath
 import random
 import re
+import shutil
 import subprocess
 import secrets
 import threading
@@ -464,14 +465,23 @@ class Handler(BaseHTTPRequestHandler):
             cmd = r["install_command"]
             if not cmd:
                 return self._send(200, {"ok": False, "error": "nothing to install"})
-            ask = "/ai/bin/ask-sudo"
-            if not os.path.exists(ask):
-                return self._send(200, {"ok": False, "command": cmd,
-                                        "error": "ask-sudo not found; run it yourself"})
-            # ask-sudo's title is a FLAG; positional makes it the command.
-            subprocess.Popen([ask, "--title", "wpe-studio - install dependencies",
-                              "bash", "-c", cmd], start_new_session=True)
-            return self._send(200, {"ok": True, "popped": True, "command": cmd})
+            # Three ways to ask for root, most specific first. ask-sudo is a
+            # local tool on the author's machine; pkexec ships with polkit and
+            # is on essentially every desktop distro. If neither exists, hand
+            # the command back so the UI can show it rather than failing.
+            for launcher in (
+                ["/ai/bin/ask-sudo", "--title",
+                 "wpe-studio - install dependencies", "bash", "-c", cmd],
+                [shutil.which("pkexec") or "", "bash", "-c", cmd],
+            ):
+                if not launcher[0] or not os.path.exists(launcher[0]):
+                    continue
+                subprocess.Popen(launcher, start_new_session=True)
+                return self._send(200, {"ok": True, "popped": True, "command": cmd,
+                                        "via": os.path.basename(launcher[0])})
+
+            return self._send(200, {"ok": False, "popped": False, "command": cmd,
+                                    "error": "no way to ask for root here"})
 
         if p == "/api/walkthrough-done":
             def _f(st):
