@@ -27,7 +27,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import deps, desktop, engine, library, paths, state, steamio, translate
+from . import deps, desktop, engine, library, paths, state, steamio, translate, ugc
 
 HOST = os.environ.get("WPE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WPE_PORT", "8014"))
@@ -152,6 +152,26 @@ class LibraryWatcher(threading.Thread):
 ROTATOR = Rotator()
 WATCHER = LibraryWatcher()
 
+_SUBS = {"at": 0.0, "ids": set()}
+_FOCUS_TAB = ""
+
+
+def _subscribed_ids(max_age=30):
+    """What Steam says the user is subscribed to.
+
+    Worth asking rather than inferring from disk: the whole point of the
+    download queue is that those two lists disagree.
+    """
+    now = time.time()
+    if now - _SUBS["at"] < max_age:
+        return _SUBS["ids"]
+    st = ugc.status()
+    if st.get("ok"):
+        have = {i["id"] for i in library.scan()}
+        _SUBS["ids"] = set(st.get("missing") or []) | have
+        _SUBS["at"] = now
+    return _SUBS["ids"]
+
 # Set when the tray panel should dismiss itself. It runs in its own process, so
 # this is the cheapest channel that does not need a second socket.
 _MINI_CLOSE = threading.Event()
@@ -273,6 +293,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": repr(e)})
 
     def _get(self, p, q):
+        global _FOCUS_TAB
         if p in ("/", "/index.html"):
             return self._file(os.path.join(paths.WEB_DIR, "index.html"), "text/html")
         if p in ("/mini", "/mini.html"):
@@ -305,6 +326,10 @@ class Handler(BaseHTTPRequestHandler):
             st["library_version"] = WATCHER.version
             st["library_count"] = WATCHER.count
             st["steam_running"] = steamio.steam_running()
+            job = ugc.Sync.active()
+            st["downloads"] = job.snapshot() if job else None
+            if _FOCUS_TAB:
+                st["focus_tab"], _FOCUS_TAB = _FOCUS_TAB, ""
             return self._send(200, st)
         if p == "/api/state":
             return self._send(200, state.load())
@@ -328,15 +353,65 @@ class Handler(BaseHTTPRequestHandler):
                 "script_driven": library.script_driven(wid),
             })
         if p == "/api/workshop":
-            return self._send(200, steamio.browse(
+            r = steamio.browse(
                 query=(q.get("q") or [""])[0],
                 sort=(q.get("sort") or ["trend"])[0],
                 page=int((q.get("page") or ["1"])[0]),
-            ))
+                days=int((q.get("days") or ["-1"])[0]),
+                tags=[t for t in q.get("tag", []) if t],
+            )
+            # Which of these the user already has, from Steam's own view rather
+            # than from what happens to be unpacked on disk.
+            if r.get("ok"):
+                subs = _subscribed_ids()
+                for it in r["items"]:
+                    it["subscribed"] = it["id"] in subs
+            return self._send(200, r)
+        if p == "/api/workshop/filters":
+            return self._send(200, {"groups": steamio.filters()})
+        if p == "/api/workshop/item":
+            wid = (q.get("id") or [""])[0]
+            d = steamio.item_details([wid]).get(wid)
+            if not d:
+                return self._send(404, {"error": "not found"})
+            return self._send(200, {
+                "ok": True,
+                "id": wid,
+                "title": d.get("title") or "(untitled)",
+                "description": d.get("description") or "",
+                "preview": d.get("preview_url") or "",
+                "tags": [t.get("tag") for t in (d.get("tags") or []) if t.get("tag")],
+                "size": int(d.get("file_size") or 0),
+                "updated": d.get("time_updated") or 0,
+                "created": d.get("time_created") or 0,
+                "subscriptions": d.get("subscriptions") or 0,
+                "favorited": d.get("favorited") or 0,
+                "views": d.get("views") or 0,
+                "banned": bool(d.get("banned")),
+                "creator": d.get("creator") or "",
+                "subscribed": wid in _subscribed_ids(),
+                "installed": bool(library.get(wid)),
+                "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=%s" % wid,
+            })
         if p == "/api/steam":
             st = steamio.hook_status()
             st["signed_in"] = steamio.signed_in()
             return self._send(200, st)
+        if p == "/api/focus-tab":
+            # A second launch raises the window that is already open; this is
+            # how it asks that window to switch to the tab that was asked for.
+            want = (q.get("tab") or [""])[0]
+            if want:
+                _FOCUS_TAB = want
+                return self._send(200, {"ok": True})
+            tab, _FOCUS_TAB = _FOCUS_TAB, ""
+            return self._send(200, {"tab": tab})
+        if p == "/api/queue":
+            job = ugc.Sync.active()
+            out = {"job": job.snapshot() if job else None}
+            if q.get("full") == ["1"] or not job:
+                out.update(ugc.status())
+            return self._send(200, out)
         if p == "/api/deps":
             return self._send(200, deps.report())
         if p == "/api/translate":
@@ -388,6 +463,16 @@ class Handler(BaseHTTPRequestHandler):
             state.set_props(wid, {})
             return self._send(200, {"ok": True,
                                     "defaults": library.defaults_for(wid)})
+
+        if p == "/api/queue/sync":
+            job, fresh = ugc.Sync.start_job(b.get("ids"))
+            return self._send(200, {"ok": True, "started": fresh,
+                                    "job": job.snapshot()})
+        if p == "/api/queue/stop":
+            job = ugc.Sync.active()
+            if job:
+                job.stop()
+            return self._send(200, {"ok": True, "stopped": bool(job)})
 
         if p == "/api/settings":
             def _f(st):
@@ -476,8 +561,15 @@ class Handler(BaseHTTPRequestHandler):
                     steamio.start_steam()
                 return self._send(200, res)
             if action == "subscribe" or action == "unsubscribe":
-                r = steamio.set_subscription(b.get("id"), action == "subscribe")
+                wid = b.get("id")
+                r = steamio.set_subscription(wid, action == "subscribe")
                 r["steam_running"] = steamio.steam_running()
+                # Subscribing records the subscription; it does not download
+                # anything. Ask the client for it now, or it sits in the same
+                # limbo as the rest of the backlog.
+                if r.get("ok") and action == "subscribe" and r["steam_running"]:
+                    job, _fresh = ugc.Sync.start_job([wid])
+                    r["queued"] = True
                 return self._send(200, r)
             if action == "signed_in":
                 return self._send(200, {"signed_in": steamio.signed_in()})
@@ -662,6 +754,8 @@ def serve(host=HOST, port=PORT, background=False):
     httpd.daemon_threads = True
     ROTATOR.start()
     WATCHER.start()
+    ugc.Watcher(enabled=lambda: bool(
+        state.load()["global"].get("auto_download", True))).start()
     if background:
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()

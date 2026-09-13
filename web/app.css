@@ -448,12 +448,59 @@ select:focus { border-color: var(--accent); outline: none; }
    and its pager would only ever flash behind it. The bar stays -- the checkbox
    that turns the site off again lives on it. */
 body.embedded .wsnote,
-body.embedded .wspager,
-body.embedded #wsGrid { display: none; }
+body.embedded .wsqueue,
+body.embedded .wsbody { display: none; }
+
+/* Three columns, the way the real Workshop is laid out: what you can narrow
+   by, the results, and what you are looking at. */
+.wsbody { flex: 1; display: grid; grid-template-columns: 186px 1fr 300px;
+  min-height: 0; overflow: hidden; }
+.wsmain { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.wsmain #wsGrid { flex: 1; overflow: auto; }
+
+.wsfilters { overflow: auto; border-right: 1px solid var(--line);
+  background: var(--bg2); padding: 10px 0 20px; }
+.wsfilters .fgroup { padding: 8px 12px; }
+.wsfilters .fgroup > b { display: block; font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--fg3); margin-bottom: 6px; }
+.wsfilters select { width: 100%; }
+.wsfilters .fopt { display: flex; align-items: center; gap: 6px; padding: 2px 0;
+  color: var(--fg2); font-size: 12px; cursor: pointer; }
+.wsfilters .fopt input { accent-color: var(--accent); }
+.wsfilters .fclear { margin: 4px 12px 0; }
+
+.wsdetail { overflow: auto; border-left: 1px solid var(--line);
+  background: var(--bg2); padding: 12px; }
+.wsdetail img.hero { width: 100%; border-radius: var(--radius); display: block;
+  border: 1px solid var(--line); }
+.wsdetail h3 { margin: 10px 0 4px; font-size: 14px; line-height: 1.3; }
+.wsdetail .meta { color: var(--fg3); font-size: 11px; display: flex; flex-wrap: wrap;
+  gap: 4px 10px; margin-bottom: 10px; }
+.wsdetail .desc { font-size: 12px; color: var(--fg2); white-space: pre-wrap;
+  max-height: 190px; overflow: auto; margin-top: 10px;
+  border-top: 1px solid var(--line); padding-top: 10px; }
+.wsdetail .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.wsdetail .tag { font-size: 10px; padding: 2px 7px; border-radius: 99px;
+  background: var(--bg3); border: 1px solid var(--line); color: var(--fg2); }
+.wsdetail .acts { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.wsdetail .acts .btn { width: 100%; justify-content: center; }
+
+/* The download queue. Loud on purpose -- a backlog of hundreds of subscribed
+   wallpapers that never download is invisible until something says so. */
+.wsqueue { display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+  background: var(--bg3); border-bottom: 1px solid var(--line); font-size: 12px; }
+.wsqueue .bar { flex: 1; height: 5px; border-radius: 99px; background: var(--bg);
+  overflow: hidden; }
+.wsqueue .bar i { display: block; height: 100%; background: var(--orange);
+  transition: width .3s; }
+.wsqueue b { color: var(--fg); }
+
+.mini { padding: 5px 8px; font-size: 12px; }
 
 /* Subscribe, on the tile. Always visible: hover-only was invisible to anyone
    who did not already know it was there, and the point of this grid over the
    embedded site is that subscribing is one obvious click. */
+
 .tile.ws .wsub {
   position: absolute; right: 6px; bottom: 26px; z-index: 2;
   padding: 4px 10px; font-size: 11px; font-weight: 600; line-height: 1;
@@ -584,3 +631,10 @@ body.selecting .tile.picked { border-color: var(--danger); }
   .view[data-view="installed"].active { grid-template-columns: 1fr; }
   .filters, .detail { display: none; }
 }
+
+
+/* The workshop view is a column: chrome on top, the three-pane body below it
+   taking whatever is left. Without this the body has no height to distribute
+   and the filter rail collapses. */
+.view[data-view="workshop"] { display: none; flex-direction: column; min-height: 0; }
+.view[data-view="workshop"].active { display: flex; }

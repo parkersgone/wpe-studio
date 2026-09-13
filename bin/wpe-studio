@@ -11,16 +11,21 @@ Electron, no chromium, no pip install. If WebKit is missing we fall back to the
 default browser rather than failing.
 """
 import argparse
+import atexit
 import json
 import os
 import socket
 import subprocess
+import urllib.request
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from wpestudio import engine, paths, server  # noqa: E402
+
+
+HOST_DEFAULT, PORT_DEFAULT = "127.0.0.1", 8014
 
 
 def port_open(host, port, timeout=0.35):
@@ -77,6 +82,60 @@ def _make_steam_view(WebKit2, bg):
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) "
         "Version/17.0 Safari/605.1.15")
     return v
+
+
+APP_PIDFILE = os.path.join(paths.RUN_DIR, "app.pid")
+
+
+def _running_app():
+    """The pid of an app window already up, or None."""
+    try:
+        with open(APP_PIDFILE) as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    if pid == os.getpid():
+        return None
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            cmd = fh.read()
+    except OSError:
+        return None
+    return pid if b"wpe-studio" in cmd and b"--server" not in cmd else None
+
+
+def raise_existing(tab=""):
+    """Bring the window that is already open to the front. True if we did.
+
+    Launching a second copy is never what anyone means -- clicking the tray
+    icon, the menu entry and Steam's Play button all mean "show me the app".
+    Two windows on the same daemon then fight over the same state and only one
+    of them responds to the tray, which is exactly the stuck extra window this
+    is here to prevent.
+    """
+    pid = _running_app()
+    if not pid:
+        return False
+    try:
+        out = subprocess.run(["wmctrl", "-lp"], capture_output=True, text=True,
+                             timeout=3).stdout
+    except Exception:
+        return False
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) >= 3 and parts[2] == str(pid):
+            subprocess.run(["wmctrl", "-i", "-a", parts[0]], timeout=3)
+            if tab:
+                # The page owns tab switching; poke it through the daemon the
+                # same way the tray does.
+                try:
+                    urllib.request.urlopen(
+                        "http://%s:%d/api/focus-tab?tab=%s"
+                        % (HOST_DEFAULT, PORT_DEFAULT, tab), timeout=2).read()
+                except Exception:
+                    pass
+            return True
+    return False
 
 
 def open_window(url):
@@ -323,6 +382,18 @@ def main():
     if args.no_window:
         print(url)
         return 0
+
+    global HOST_DEFAULT, PORT_DEFAULT
+    HOST_DEFAULT, PORT_DEFAULT = args.host, args.port
+    if raise_existing(args.tab):
+        return 0
+
+    os.makedirs(paths.RUN_DIR, exist_ok=True)
+    with open(APP_PIDFILE, "w") as fh:
+        fh.write(str(os.getpid()))
+    atexit.register(lambda: _running_app() is None
+                    and os.path.exists(APP_PIDFILE)
+                    and os.remove(APP_PIDFILE))
     return open_window(url)
 
 

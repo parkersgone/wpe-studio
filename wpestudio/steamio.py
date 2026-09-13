@@ -300,19 +300,22 @@ def browse(query="", sort="trend", page=1, days=-1, tags=None, timeout=12):
     Returns [] on any failure rather than raising: a Workshop tab that shows
     nothing is annoying, one that takes the whole UI down is not acceptable.
     """
-    params = {
-        "appid": APPID,
-        "section": "readytouseitems",
-        "browsesort": sort,
-        "p": str(max(1, int(page))),
-        "numperpage": "30",
-    }
+    params = [
+        ("appid", APPID),
+        ("section", "readytouseitems"),
+        ("browsesort", sort),
+        ("p", str(max(1, int(page)))),
+        ("numperpage", "30"),
+    ]
     if query:
-        params["searchtext"] = query
+        params.append(("searchtext", query))
     if days and int(days) > 0:
-        params["days"] = str(days)
+        params.append(("days", str(days)))
+    # A list of pairs, not a dict: requiredtags[] repeats once per tag and a
+    # dict silently kept only the last one, so every multi-tag filter was
+    # quietly filtering on one thing.
     for t in (tags or []):
-        params.setdefault("requiredtags[]", t)
+        params.append(("requiredtags[]", t))
     url = "https://steamcommunity.com/workshop/browse/?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
@@ -438,3 +441,61 @@ def set_subscription(wid, subscribe=True):
     ok = status == 200 and ('"success":1' in body.replace(" ", "")
                             or body.strip() in ("", "null"))
     return {"ok": ok, "status": status, "body": body, "subscribed": subscribe}
+
+
+# --- the filter taxonomy -----------------------------------------------------
+#
+# Wallpaper Engine's tags are its own -- Scene/Video/Web, age ratings, two dozen
+# genres, a resolution list that includes triple-monitor sizes. Hardcoding them
+# means going stale the first time a tag is added, so read the real list off
+# the Workshop page, where it is embedded as JSON, and cache it for the day.
+
+_FILTER_CACHE = {"at": 0.0, "groups": None}
+# Groups that belong to other kinds of Workshop item, or to Steam rather than
+# to Wallpaper Engine. Showing them would only ever return nothing.
+_FILTER_SKIP = {
+    "#SharedFiles_GameGuides", "Languages", "Hidden",
+    "Asset Type", "Asset Genre", "Script Type",
+}
+
+
+def filters(timeout=12, max_age=86400):
+    """[{name, kind, tags:[...]}] -- the same filters the Workshop page offers."""
+    now = time.time()
+    if _FILTER_CACHE["groups"] and now - _FILTER_CACHE["at"] < max_age:
+        return _FILTER_CACHE["groups"]
+
+    url = ("https://steamcommunity.com/workshop/browse/?appid=%s"
+           "&section=readytouseitems" % APPID)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return _FILTER_CACHE["groups"] or []
+
+    # The taxonomy is embedded as a JSON string inside the page, so it arrives
+    # double-escaped; undo one level before matching.
+    seg = body.replace('\\"', '"').replace('\\/', '/')
+    groups, seen = [], set()
+    pattern = re.compile(
+        r'\{"name":"([^"]+)","htmlelement":"(select|checkbox)",'
+        r'"external_url":"[^"]*","external_url_button_text":"[^"]*","tags":(\[.*?\])\}')
+    for m in pattern.finditer(seg):
+        name, kind = m.group(1), m.group(2)
+        if name in _FILTER_SKIP or name in seen:
+            continue
+        try:
+            tags = json.loads(m.group(3))
+        except ValueError:
+            continue
+        names = [t.get("display_name") or t.get("name") for t in tags]
+        names = [n for n in names if n]
+        if not names:
+            continue
+        seen.add(name)
+        groups.append({"name": name, "kind": kind, "tags": names})
+
+    if groups:
+        _FILTER_CACHE.update(at=now, groups=groups)
+    return groups or _FILTER_CACHE["groups"] or []

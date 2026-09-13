@@ -17,11 +17,15 @@ const App = {
   monitor: null,
   filters: { q: "", type: new Set(), source: new Set(), rating: new Set(), tags: new Set() },
   sort: "recent",
-  ws: { page: 1, sort: "trend", q: "", items: [], subbed: new Set(), signedIn: false },
+  ws: { page: 1, sort: "trend", q: "", items: [], subbed: new Set(),
+        signedIn: false, sel: null, peeking: false },
   scripted: new Set(),   // wallpapers driven by their own scene script
   selecting: false,
   picked: new Set(),
   plPicked: new Set(),
+  applying: null,
+  appliedId: null,
+  appliedAt: 0,
 };
 
 /* ── api ──────────────────────────────────────────────────────────── */
@@ -187,7 +191,10 @@ $("#tabs").addEventListener("click", (e) => {
   $$(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === b.dataset.view));
   const workshop = b.dataset.view === "workshop";
   showSteam(workshop && siteMode());
-  if (workshop && !siteMode() && !$("#wsGrid").children.length) loadWorkshop();
+  if (workshop && !siteMode()) {
+    if (!$("#wsGrid").children.length) loadWorkshop();
+    refreshQueue(true);
+  }
 });
 
 /* ── filters ──────────────────────────────────────────────────────── */
@@ -327,17 +334,15 @@ $("#grid").addEventListener("click", async (e) => {
     renderSelbar();
     return;
   }
+  // One tap puts it on the screen and opens its settings, the same as the tray
+  // panel. Two gestures for "show me" and "use it" was a distinction nobody
+  // wanted -- you click a wallpaper because you want to see it up.
   openDetail(t.dataset.id);
+  if (t.dataset.id !== App.applying) applyWallpaper(t.dataset.id);
 });
-// Double-click applies, the same as the Apply button. It also selects, so the
-// properties panel is showing the wallpaper that just went up rather than
-// whatever was open before.
-$("#grid").addEventListener("dblclick", (e) => {
-  const t = e.target.closest(".tile");
-  if (!t || App.selecting) return;      // while selecting, a double click is two picks
-  openDetail(t.dataset.id);
-  applyWallpaper(t.dataset.id);
-});
+// A double click is two clicks and the guard in applyWallpaper already folded
+// it into one apply; stop the browser doing anything else with it.
+$("#grid").addEventListener("dblclick", (e) => e.preventDefault());
 
 // Same in the playlist picker's grid and the walkthrough's, so the gesture
 // means one thing everywhere.
@@ -748,14 +753,29 @@ async function pushProps() {
 
 /* ── apply / stop ─────────────────────────────────────────────────── */
 async function applyWallpaper(id) {
+  // One tap applies, so a double tap arrives as two applies and a quick
+  // browse arrives as several. Collapse them: whatever is mid-flight wins,
+  // and re-tapping what is already up does nothing.
+  if (App.applying) return;
+  if (id === App.appliedId && Date.now() - App.appliedAt < 1200) return;
+  App.applying = id;
   toast("Starting");
-  const r = await api("/api/apply", { id, monitor: App.monitor });
-  if (!r.ok) {
-    toast("Failed: " + (r.error || "unknown") + (r.log ? " — see Settings ▸ Engine log" : ""), true);
-  } else if (r.warning) {
-    toast(r.warning, true);
-  } else {
-    toast(r.title);
+  try {
+    const r = await api("/api/apply", { id, monitor: App.monitor });
+    if (!r.ok) {
+      toast("Failed: " + (r.error || "unknown")
+            + (r.log ? " — see Settings ▸ Engine log" : ""), true);
+    } else if (r.warning) {
+      toast(r.warning, true);
+    } else {
+      toast(r.title);
+    }
+  } finally {
+    // Always clear it. A throw here used to be able to wedge the whole grid,
+    // since nothing else can apply while this is set.
+    App.applying = null;
+    App.appliedId = id;
+    App.appliedAt = Date.now();
   }
   await refreshStatus();
 }
@@ -770,12 +790,31 @@ let lastLiveKey = "";
 
 async function refreshStatus() {
   App.boot.status = await api("/api/status");
+  // A second launch raises this window instead of opening another; if it asked
+  // for a particular tab, go there.
+  const ft = App.boot.status.focus_tab;
+  if (ft) { const t = $(`.tab[data-view="${ft}"]`); if (t) t.click(); }
+  // The status poll already runs; piggyback the download queue on it rather
+  // than adding a second timer.
+  if ($('.view[data-view="workshop"]').classList.contains("active")) {
+    wsNote();
+    const job = App.boot.status.downloads;
+    if (job) drawQueue({ job });
+    else if (App.wsJobWas) refreshQueue(true);
+    App.wsJobWas = !!job;
+  }
   App.boot.state = await api("/api/state");
   // Only rebuild the grid when something it displays actually changed.
   // Rebuilding on a 6s timer was destroying tiles mid-gesture.
   // A new subscription finished downloading: pull it in without being asked.
+  //
+  // Except during a bulk download, when an item lands every few seconds. One
+  // tap applies a wallpaper now, so a grid that reshuffles under the pointer
+  // means clicking the wrong one -- hold the new arrivals until the queue is
+  // done and fold them in once.
   if (App.libVersion === undefined) App.libVersion = App.boot.status.library_version;
-  if (App.boot.status.library_version !== App.libVersion) {
+  const bulk = !!(App.boot.status.downloads && App.boot.status.downloads.running);
+  if (App.boot.status.library_version !== App.libVersion && !bulk) {
     const before = App.items.length;
     App.libVersion = App.boot.status.library_version;
     const r = await api("/api/rescan", {});
@@ -986,21 +1025,61 @@ $("#btnRescan").onclick = async () => {
 /* ── workshop tab ─────────────────────────────────────────────────────
  * Two ways to browse: our own grid built from Steam's search results, and the
  * real site in the embedded WebView. The grid is the default because it looks
- * and behaves like the rest of the app -- same tiles, same Apply -- and it can
- * subscribe directly using the session cookie the WebView already holds. The
- * site stays one checkbox away: it is still the only place to sign in the first
- * time, and the only place with comments, changelogs and collections.        */
+ * and behaves like the rest of the app -- same tiles, same detail pane -- and
+ * it can subscribe directly using the session cookie the WebView already
+ * holds. The site stays one checkbox away: it is still the only place to sign
+ * in the first time, and the only place with comments and collections.      */
 
 function siteMode() {
   if (!embedded) return false;           // no WebView to hand over to
   return !!(App.boot.state.global || {}).workshop_site;
 }
 
+/* ── filters ── the same ones the Workshop page offers, read from it, so a tag
+   Wallpaper Engine adds later shows up here without a code change. */
+async function loadFilters() {
+  const r = await api("/api/workshop/filters");
+  const groups = (r && r.groups) || [];
+  if (!groups.length) return;
+  $("#wsFilters").innerHTML = groups.map((g) => `
+    <div class="fgroup">
+      <b>${esc(g.name)}</b>
+      ${g.kind === "select"
+        ? `<select data-fgroup="${esc(g.name)}">
+             <option value="">Any</option>
+             ${g.tags.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
+           </select>`
+        : g.tags.map((t) => `<label class="fopt"><input type="checkbox" value="${esc(t)}"> ${esc(t)}</label>`).join("")}
+    </div>`).join("")
+    + `<button class="btn subtle fclear" id="wsClear">Clear filters</button>`;
+}
+
+function activeTags() {
+  const out = [];
+  $$("#wsFilters select").forEach((sel) => { if (sel.value) out.push(sel.value); });
+  $$("#wsFilters input:checked").forEach((cb) => out.push(cb.value));
+  return out;
+}
+
+$("#wsFilters").addEventListener("change", () => { App.ws.page = 1; loadWorkshop(); });
+$("#wsFilters").addEventListener("click", (e) => {
+  if (!e.target.closest("#wsClear")) return;
+  $$("#wsFilters select").forEach((s) => { s.value = ""; });
+  $$("#wsFilters input:checked").forEach((c) => { c.checked = false; });
+  App.ws.page = 1; loadWorkshop();
+});
+
 async function loadWorkshop() {
   if (siteMode()) { showSteam(true); return; }
   showSteam(false);
+  if (!$("#wsFilters").children.length) await loadFilters();
   $("#wsGrid").innerHTML = `<div class="muted" style="padding:20px">Loading…</div>`;
-  const r = await api(`/api/workshop?q=${encodeURIComponent(App.ws.q)}&sort=${App.ws.sort}&page=${App.ws.page}`);
+  const p = new URLSearchParams({
+    q: App.ws.q, sort: App.ws.sort, page: App.ws.page,
+    days: App.ws.sort === "trend" ? $("#wsDays").value : "-1",
+  });
+  for (const t of activeTags()) p.append("tag", t);
+  const r = await api("/api/workshop?" + p.toString());
   $("#wsPage").textContent = App.ws.page;
   wsNote();
   if (!r.ok) {
@@ -1015,23 +1094,77 @@ function drawWorkshop() {
   const installed = new Set(App.items.map((i) => i.id));
   $("#wsGrid").innerHTML = (App.ws.items || []).map((it) => {
     const have = installed.has(it.id);
-    const sub = App.ws.subbed.has(it.id);
-    const label = sub ? "Downloading…" : "Subscribe";
+    const sub = it.subscribed || App.ws.subbed.has(it.id);
     return `
-    <div class="tile ws${have || sub ? " subbed" : ""}" data-ws="${esc(it.id)}">
+    <div class="tile ws${sub ? " subbed" : ""}${App.ws.sel === it.id ? " selected" : ""}"
+         data-ws="${esc(it.id)}">
       ${it.preview ? `<img loading="lazy" src="${esc(it.preview)}" alt="">`
                    : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
-      <div class="badges">${have ? `<span class="badge custom">installed</span>` : ""}
-        ${it.stars ? `<span class="badge">${it.stars}★</span>` : ""}</div>
-      ${have ? "" : `<button class="wsub" data-sub="${esc(it.id)}">${label}</button>`}
+      <div class="badges">${have ? `<span class="badge custom">installed</span>`
+                    : sub ? `<span class="badge">queued</span>` : ""}</div>
+      ${have ? "" : `<button class="wsub" data-sub="${esc(it.id)}">${
+                       sub ? "Downloading…" : "Subscribe"}</button>`}
       <div class="cap">${esc(it.title)}</div>
     </div>`;
   }).join("") || `<div class="muted" style="padding:20px">No results.</div>`;
 }
 
-/* The two things that stop a subscription turning into a wallpaper on disk:
-   not being signed in (the POST is rejected) and Steam not running (nothing is
-   there to do the download). Say which, before they click.                   */
+/* ── the detail pane ── what the Windows app shows when you click a wallpaper:
+   the picture, what it is, and one button. Previously this jumped out to
+   steamcommunity.com, which is the thing we are trying to get away from. */
+async function openWsDetail(id) {
+  App.ws.sel = id;
+  $$("#wsGrid .tile").forEach((t) => t.classList.toggle("selected", t.dataset.ws === id));
+  const known = (App.ws.items || []).find((i) => i.id === id) || {};
+  $("#wsDetail").innerHTML = `
+    ${known.preview ? `<img class="hero" src="${esc(known.preview)}" alt="">` : ""}
+    <h3>${esc(known.title || "")}</h3>
+    <div class="muted" style="font-size:11px">Loading…</div>`;
+
+  const d = await api("/api/workshop/item?id=" + encodeURIComponent(id));
+  if (App.ws.sel !== id) return;              // they clicked something else
+  if (!d.ok) {
+    $("#wsDetail").innerHTML = `<div class="empty">Could not read this item.</div>`;
+    return;
+  }
+  const mb = d.size ? (d.size / 1048576).toFixed(1) + " MB" : "";
+  const when = d.updated ? new Date(d.updated * 1000).toLocaleDateString() : "";
+  const installed = d.installed;
+  const sub = d.subscribed || App.ws.subbed.has(id);
+  $("#wsDetail").innerHTML = `
+    ${d.preview ? `<img class="hero" src="${esc(d.preview)}" alt="">` : ""}
+    <h3>${esc(d.title)}</h3>
+    <div class="meta">
+      ${d.subscriptions ? `<span>${d.subscriptions.toLocaleString()} subscribers</span>` : ""}
+      ${mb ? `<span>${mb}</span>` : ""}
+      ${when ? `<span>updated ${when}</span>` : ""}
+    </div>
+    <div class="tags">${d.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</div>
+    <div class="acts">
+      ${installed
+        ? `<button class="btn primary" id="wdApply">Apply</button>
+           <button class="btn subtle" id="wdOpen">Show in my library</button>`
+        : `<button class="btn primary" id="wdSub"${sub ? " disabled" : ""}>${
+             sub ? "Downloading…" : "Subscribe"}</button>`}
+      <button class="btn subtle" id="wdSite">Open on Steam</button>
+    </div>
+    ${d.description ? `<div class="desc">${esc(d.description)}</div>` : ""}`;
+
+  const ap = $("#wdApply");
+  if (ap) ap.onclick = () => applyWallpaper(id);
+  const op = $("#wdOpen");
+  if (op) op.onclick = () => { $('.tab[data-view="installed"]').click(); openDetail(id); };
+  const sb = $("#wdSub");
+  if (sb) sb.onclick = () => subscribe(id, sb);
+  $("#wdSite").onclick = () => {
+    if (embedded) peekSite(d.url);
+    else api("/api/steam", { action: "open_item", id });
+  };
+}
+
+/* Two things stop a subscription turning into a wallpaper on disk: not being
+   signed in (the POST is rejected) and Steam not running (nothing downloads).
+   Say which, before they click. */
 function wsNote() {
   const st = App.boot.status || {};
   const host = $("#wsnote");
@@ -1043,10 +1176,50 @@ function wsNote() {
       : `subscribing opens the item in Steam instead.`}`);
   }
   if (!st.steam_running) {
-    bits.push("Steam is not running, so downloads will not start until you open it.");
+    bits.push("Steam is not running. Subscriptions are saved and download as soon as you open it.");
   }
   host.innerHTML = bits.join(" ");
   host.hidden = !bits.length;
+}
+
+/* ── the download queue ───────────────────────────────────────────────
+ * Subscribing does not download anything -- Steam waits to be asked, and on
+ * Windows it is Wallpaper Engine that asks. Nothing did here, so subscriptions
+ * piled up invisibly. This is that backlog, and the button that clears it.  */
+async function refreshQueue(full) {
+  const r = await api("/api/queue" + (full ? "?full=1" : ""));
+  drawQueue(r);
+  return r;
+}
+
+function drawQueue(r) {
+  const host = $("#wsQueue");
+  if (!host) return;
+  const job = r && r.job;
+  if (job && job.running) {
+    const total = job.total || 1;
+    const pct = Math.round(100 * (job.done / total));
+    host.hidden = false;
+    host.innerHTML = `
+      <b>Downloading ${job.done + 1} of ${job.total}</b>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      ${job.failed ? `<span class="muted">${job.failed} unavailable</span>` : ""}
+      <button class="btn subtle" id="wqStop">Stop</button>`;
+    $("#wqStop").onclick = async () => { await api("/api/queue/stop", {}); refreshQueue(true); };
+    return;
+  }
+  const missing = r && r.missing ? r.missing.length : 0;
+  if (!missing) { host.hidden = true; host.innerHTML = ""; return; }
+  host.hidden = false;
+  host.innerHTML = `
+    <b>${missing} subscribed wallpaper${missing === 1 ? "" : "s"} not downloaded yet</b>
+    <div class="bar"><i style="width:0%"></i></div>
+    <button class="btn primary" id="wqGo">Download all</button>`;
+  $("#wqGo").onclick = async () => {
+    await api("/api/queue/sync", {});
+    toast("Downloading — this runs in the background");
+    refreshQueue();
+  };
 }
 
 async function subscribe(id, btn) {
@@ -1066,28 +1239,25 @@ async function subscribe(id, btn) {
   }
   App.ws.subbed.add(id);
   btn.textContent = "Downloading…";
-  btn.closest(".tile").classList.add("subbed");
-  toast(r.steam_running
-    ? "Subscribed — it appears under Installed when Steam finishes downloading"
-    : "Subscribed — open Steam to download it");
+  const tile = btn.closest(".tile");
+  if (tile) tile.classList.add("subbed");
+  toast(r.queued
+    ? "Subscribed — downloading now"
+    : "Subscribed — it downloads as soon as you open Steam");
+  refreshQueue();
 }
 
 $("#wsGrid").addEventListener("click", (e) => {
   const sb = e.target.closest("[data-sub]");
   if (sb) { e.stopPropagation(); subscribe(sb.dataset.sub, sb); return; }
   const t = e.target.closest("[data-ws]");
+  if (t) openWsDetail(t.dataset.ws);
+});
+$("#wsGrid").addEventListener("dblclick", (e) => {
+  const t = e.target.closest("[data-ws]");
   if (!t) return;
-  const id = t.dataset.ws;
-  // Already downloaded? Then this tile is just another way into the library.
-  if (App.items.some((i) => i.id === id)) {
-    $('.tab[data-view="installed"]').click();
-    openDetail(id);
-    return;
-  }
-  const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + id;
-  if (embedded) { peekSite(url); return; }
-  api("/api/steam", { action: "open_item", id });
-  toast("Opened in Steam");
+  // Same gesture as the library: double click means put it on the screen.
+  if (App.items.some((i) => i.id === t.dataset.ws)) applyWallpaper(t.dataset.ws);
 });
 
 /* A look at one item page without committing to the site. The checkbox stays
@@ -1123,11 +1293,13 @@ $("#wsSort").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   $$("#wsSort button").forEach((x) => x.classList.toggle("active", x === b));
-  App.ws.sort = b.dataset.sort; App.ws.page = 1; loadWorkshop();
+  App.ws.sort = b.dataset.sort;
+  $("#wsDays").hidden = App.ws.sort !== "trend";
+  App.ws.page = 1; loadWorkshop();
 });
+$("#wsDays").addEventListener("change", () => { App.ws.page = 1; loadWorkshop(); });
 $("#wsPrev").onclick = () => { if (App.ws.page > 1) { App.ws.page--; loadWorkshop(); } };
 $("#wsNext").onclick = () => { App.ws.page++; loadWorkshop(); };
-$("#wsOpenSteam").onclick = () => api("/api/steam", { action: "open_workshop" });
 
 /* ── playlists ────────────────────────────────────────────────────── */
 function renderPlaylists() {

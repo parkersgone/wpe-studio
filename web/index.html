@@ -113,15 +113,33 @@
         <button data-sort="mostrecent">Newest</button>
         <button data-sort="totaluniquesubscribers">All-time</button>
       </div>
+      <select id="wsDays" class="mini" title="Popular over what period">
+        <option value="-1">All time</option>
+        <option value="1">Today</option>
+        <option value="7" selected>This week</option>
+        <option value="30">This month</option>
+        <option value="90">Three months</option>
+        <option value="365">This year</option>
+      </select>
       <label class="chk"><input type="checkbox" id="wsSite"> Browse the site instead</label>
-      <button class="btn" id="wsOpenSteam">Open in Steam <i class="fa">&#xf08e;</i></button>
     </div>
+
+    <div class="wsqueue" id="wsQueue" hidden></div>
     <div class="wsnote" id="wsnote"></div>
-    <div class="grid ws" id="wsGrid"></div>
-    <div class="wspager">
-      <button class="btn subtle" id="wsPrev">Previous</button>
-      <span id="wsPage">1</span>
-      <button class="btn subtle" id="wsNext">Next</button>
+
+    <div class="wsbody">
+      <aside class="wsfilters" id="wsFilters"></aside>
+      <div class="wsmain">
+        <div class="grid ws" id="wsGrid"></div>
+        <div class="wspager">
+          <button class="btn subtle" id="wsPrev">Previous</button>
+          <span id="wsPage">1</span>
+          <button class="btn subtle" id="wsNext">Next</button>
+        </div>
+      </div>
+      <aside class="wsdetail" id="wsDetail">
+        <div class="empty">Pick a wallpaper to see what it is</div>
+      </aside>
     </div>
   </section>
 

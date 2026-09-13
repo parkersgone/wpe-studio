@@ -35,22 +35,28 @@ html,body{
   border-radius:var(--r,0);overflow:hidden;
   border:1px solid rgba(255,255,255,.10);
 }
-.right{background:color-mix(in srgb, var(--bg2) calc(var(--alpha,1) * 100%), transparent)}
-.head{background:color-mix(in srgb, var(--bg2) calc(var(--alpha,1) * 100%), transparent)}
+/* Everything that paints a surface goes through these, so the opacity setting
+   reaches the whole panel and not just the ground behind the thumbnails. The
+   controls sit a little more opaque than the panels they are on -- at 40% a
+   text field over a busy wallpaper is unreadable otherwise. */
+.wrap{
+  --surface2: color-mix(in srgb, var(--bg2) calc(var(--alpha,1) * 100%), transparent);
+  --surface3: color-mix(in srgb, var(--bg3) calc((0.35 + var(--alpha,1) * 0.65) * 100%), transparent);
+}
 
 /* ── wallpapers ─────────────────────────────────────────────────── */
 .left{display:flex;flex-direction:column;min-width:0;min-height:0}
 .head{
   display:flex;align-items:center;gap:8px;padding:8px 10px;
-  border-bottom:1px solid var(--line);background:var(--bg2);
+  border-bottom:1px solid var(--line);background:var(--surface2);
 }
 .head input{
-  flex:1;min-width:0;background:var(--bg3);border:1px solid var(--line);
+  flex:1;min-width:0;background:var(--surface3);border:1px solid var(--line);
   color:var(--fg);border-radius:3px;padding:4px 8px;font:inherit;outline:none;
 }
 .head input:focus{border-color:var(--accent)}
 .seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;flex:none}
-.seg button{background:var(--bg3);border:0;color:var(--fg2);padding:4px 8px;font:inherit;cursor:pointer}
+.seg button{background:var(--surface3);border:0;color:var(--fg2);padding:4px 8px;font:inherit;cursor:pointer}
 .seg button.on{background:var(--accent);color:#fff}
 .grid{
   flex:1;min-height:0;overflow-y:auto;padding:8px;display:grid;gap:6px;
@@ -61,7 +67,7 @@ html,body{
 }
 .tile{
   position:relative;aspect-ratio:16/10;border-radius:3px;overflow:hidden;
-  background:var(--bg3);cursor:pointer;border:2px solid transparent;
+  background:var(--surface3);cursor:pointer;border:2px solid transparent;
 }
 .tile img{width:100%;height:100%;object-fit:cover;display:block}
 .tile .noimg{width:100%;height:100%;display:grid;place-items:center;color:var(--fg3)}
@@ -77,7 +83,7 @@ html,body{
 
 /* ── settings column ────────────────────────────────────────────── */
 .right{
-  border-left:1px solid var(--line);background:var(--bg2);
+  border-left:1px solid var(--line);background:var(--surface2);
   display:flex;flex-direction:column;min-height:0;
 }
 .now{padding:9px 10px;border-bottom:1px solid var(--line)}
@@ -102,9 +108,9 @@ html,body{
 #props .p input[type=range]{flex:1;accent-color:var(--accent)}
 #props .p output{width:32px;text-align:right;color:var(--fg3);font-size:10px}
 #props .p input[type=color]{width:30px;height:18px;padding:0;border:1px solid var(--line);
-  background:var(--bg3);border-radius:3px}
+  background:var(--surface3);border-radius:3px}
 #props .p input[type=text],#props .p select{
-  width:100%;background:var(--bg3);border:1px solid var(--line);color:var(--fg);
+  width:100%;background:var(--surface3);border:1px solid var(--line);color:var(--fg);
   border-radius:3px;padding:3px 5px;font:inherit;font-size:11px}
 #props .none{color:var(--fg3);font-size:10.5px}
 .opt{margin-bottom:9px}
@@ -113,7 +119,7 @@ html,body{
 .opt input[type=range]{flex:1;accent-color:var(--accent)}
 .opt output{width:34px;text-align:right;color:var(--fg3);font-size:10.5px}
 .opt select{
-  width:100%;background:var(--bg3);border:1px solid var(--line);color:var(--fg);
+  width:100%;background:var(--surface3);border:1px solid var(--line);color:var(--fg);
   border-radius:3px;padding:4px 22px 4px 6px;font:inherit;
   /* WebKit paints a closed select with the OPTION colours, which default to
      black on white -- without this it reads as an empty box. */
@@ -128,7 +134,7 @@ html,body{
 .tog{display:flex;align-items:center;justify-content:space-between;padding:4px 0;color:var(--fg2)}
 .switch{position:relative;width:32px;height:17px;flex:none}
 .switch input{opacity:0;width:0;height:0}
-.switch span{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--line);
+.switch span{position:absolute;inset:0;background:var(--surface3);border:1px solid var(--line);
   border-radius:9px;transition:.15s}
 .switch span::before{content:"";position:absolute;width:11px;height:11px;left:2px;top:2px;
   background:var(--fg3);border-radius:50%;transition:.15s}
@@ -136,14 +142,14 @@ html,body{
 .switch input:checked + span::before{transform:translateX(15px);background:#fff}
 .foot{padding:8px 10px;border-top:1px solid var(--line);display:grid;gap:5px}
 .btn{
-  background:var(--bg3);color:var(--fg);border:1px solid var(--line);border-radius:3px;
+  background:var(--surface3);color:var(--fg);border:1px solid var(--line);border-radius:3px;
   padding:5px 8px;font:inherit;cursor:pointer;
 }
 .btn:hover{background:#3d3d3d}
 .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 ::-webkit-scrollbar{width:8px}
-::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#444;border-radius:4px}
 </style>
 </head>

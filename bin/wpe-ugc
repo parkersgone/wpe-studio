@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""wpe-ugc -- ask the running Steam client to download subscribed wallpapers.
+
+Subscribing to a Workshop item does NOT make Steam download it. Steam only
+tracks the subscription; the *game* is expected to call ISteamUGC::DownloadItem
+for anything it wants on disk. That is what Wallpaper Engine does on Windows,
+and it is why a Linux box can sit on hundreds of subscriptions with nothing
+appearing in the workshop folder -- there is no Wallpaper Engine here to ask.
+
+So we ask. This is a few ctypes calls into libsteam_api.so against the client
+that is already running, which means no credentials, no steamcmd, and the
+downloads land in Steam's own queue exactly as they would on Windows.
+
+It is a separate script rather than part of the daemon for one reason: with a
+Flatpak Steam the client's IPC lives inside the sandbox, and a host process
+gets a broken pipe part-way through. The daemon stages this file into the
+sandbox home and runs it with `flatpak run --command=python3`, where it can
+talk to the client properly. On a native Steam it just runs in place.
+
+Output is JSON, one object per line, each prefixed with @@WPEUGC@@ so it can be
+picked out of the noise Steam's own libraries print to stdout.
+
+  wpe-ugc status          what is subscribed, installed, missing
+  wpe-ugc sync            download everything subscribed but not installed
+  wpe-ugc get ID [ID...]  download specific items
+"""
+import ctypes
+import json
+import os
+import sys
+import time
+
+MARK = "@@WPEUGC@@"
+
+# Item state bits, from isteamugc.h.
+SUBSCRIBED, LEGACY, INSTALLED, NEEDS_UPDATE, DOWNLOADING, DOWNLOAD_PENDING = (
+    1, 2, 4, 8, 16, 32)
+
+
+def emit(**kw):
+    sys.stdout.write(MARK + json.dumps(kw) + "\n")
+    sys.stdout.flush()
+
+
+def steam_root():
+    for p in (os.environ.get("WPE_STEAM_ROOT"),
+              os.path.expanduser("~/.local/share/Steam"),
+              os.path.expanduser("~/.steam/steam")):
+        if p and os.path.isdir(os.path.join(p, "steamrt64")):
+            return p
+    return None
+
+
+class UGC:
+    def __init__(self):
+        root = steam_root()
+        if not root:
+            raise RuntimeError("no Steam runtime directory found")
+        os.environ.setdefault("SteamAppId", "431960")
+        os.environ.setdefault("SteamGameId", "431960")
+        self.lib = ctypes.CDLL(os.path.join(root, "steamrt64", "libsteam_api.so"))
+
+        self.lib.SteamAPI_InitFlat.restype = ctypes.c_int
+        self.lib.SteamAPI_InitFlat.argtypes = [ctypes.c_char_p]
+        err = ctypes.create_string_buffer(1024)
+        rc = self.lib.SteamAPI_InitFlat(err)
+        if rc != 0:
+            raise RuntimeError(err.value.decode("utf-8", "replace") or
+                               "SteamAPI_InitFlat failed (%d)" % rc)
+
+        # The interface accessor is versioned and the version moves with the
+        # SDK. Take the newest one this libsteam_api actually exports rather
+        # than pinning a number that will break on a Steam update.
+        self.ugc = None
+        for v in range(30, 12, -1):
+            fn = getattr(self.lib, "SteamAPI_SteamUGC_v%03d" % v, None)
+            if fn is None:
+                continue
+            fn.restype = ctypes.c_void_p
+            self.ugc = fn()
+            break
+        if not self.ugc:
+            raise RuntimeError("no SteamAPI_SteamUGC_vNNN accessor in libsteam_api.so")
+
+        p, u32, u64, b = ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_bool
+        pu64 = ctypes.POINTER(u64)
+        for name, res, args in (
+            ("GetNumSubscribedItems", u32, [p]),
+            ("GetSubscribedItems", u32, [p, pu64, u32]),
+            ("GetItemState", u32, [p, u64]),
+            ("DownloadItem", b, [p, u64, b]),
+            ("GetItemDownloadInfo", b, [p, u64, pu64, pu64]),
+        ):
+            f = getattr(self.lib, "SteamAPI_ISteamUGC_" + name)
+            f.restype, f.argtypes = res, args
+
+    def pump(self):
+        self.lib.SteamAPI_RunCallbacks()
+
+    def subscribed(self):
+        n = self.lib.SteamAPI_ISteamUGC_GetNumSubscribedItems(self.ugc)
+        if not n:
+            return []
+        arr = (ctypes.c_uint64 * n)()
+        got = self.lib.SteamAPI_ISteamUGC_GetSubscribedItems(self.ugc, arr, n)
+        return list(arr)[:got]
+
+    def state(self, wid):
+        return self.lib.SteamAPI_ISteamUGC_GetItemState(self.ugc, wid)
+
+    def download(self, wid, high=True):
+        return bool(self.lib.SteamAPI_ISteamUGC_DownloadItem(self.ugc, wid, high))
+
+    def progress(self, wid):
+        cur, tot = ctypes.c_uint64(), ctypes.c_uint64()
+        self.lib.SteamAPI_ISteamUGC_GetItemDownloadInfo(
+            self.ugc, wid, ctypes.byref(cur), ctypes.byref(tot))
+        return cur.value, tot.value
+
+
+def snapshot(u):
+    ids = u.subscribed()
+    installed, pending = [], []
+    for i in ids:
+        (installed if u.state(i) & INSTALLED else pending).append(str(i))
+    return {"subscribed": len(ids), "installed": len(installed),
+            "missing": pending}
+
+
+def cmd_status(u):
+    emit(ok=True, **snapshot(u))
+
+
+def cmd_sync(u, ids=None):
+    """Work through the backlog, a few at a time.
+
+    Steam handles its own queueing, but asking for three hundred items in one
+    breath makes the client's download list useless to look at and starves
+    whatever the user actually wants first. A small window keeps it moving and
+    keeps the reported progress meaningful.
+    """
+    window = int(os.environ.get("WPE_UGC_WINDOW", "4"))
+    budget = float(os.environ.get("WPE_UGC_TIMEOUT", "3600"))
+    queue = [int(i) for i in ids] if ids else [int(i) for i in snapshot(u)["missing"]]
+    emit(ok=True, event="start", total=len(queue))
+    if not queue:
+        emit(ok=True, event="done", installed=0, failed=0)
+        return 0
+
+    started = time.time()
+    active, done, failed = {}, 0, 0
+    while (queue or active) and time.time() - started < budget:
+        while queue and len(active) < window:
+            wid = queue.pop(0)
+            if u.state(wid) & INSTALLED:
+                done += 1
+                continue
+            if u.download(wid, True):
+                active[wid] = time.time()
+            else:
+                failed += 1
+                emit(ok=False, event="item", id=str(wid), error="download_refused")
+
+        u.pump()
+        time.sleep(1.0)
+
+        for wid in list(active):
+            st = u.state(wid)
+            if st & INSTALLED:
+                done += 1
+                del active[wid]
+                emit(ok=True, event="item", id=str(wid), installed=True,
+                     done=done, failed=failed, remaining=len(queue) + len(active))
+                continue
+            # Nothing moving after a while means the item is gone from the
+            # Workshop, or hidden, or region-locked. Do not block the rest.
+            if not (st & (DOWNLOADING | DOWNLOAD_PENDING)) and \
+                    time.time() - active[wid] > 45:
+                failed += 1
+                del active[wid]
+                emit(ok=False, event="item", id=str(wid), error="no_progress")
+                continue
+            cur, tot = u.progress(wid)
+            if tot:
+                emit(ok=True, event="progress", id=str(wid), current=cur, total=tot,
+                     done=done, failed=failed, remaining=len(queue) + len(active))
+
+    emit(ok=True, event="done", installed=done, failed=failed,
+         remaining=len(queue) + len(active))
+    return 0
+
+
+def main(argv):
+    what = argv[1] if len(argv) > 1 else "status"
+    try:
+        u = UGC()
+    except Exception as e:
+        emit(ok=False, error=str(e)[:300])
+        return 1
+    try:
+        if what == "status":
+            cmd_status(u)
+        elif what == "sync":
+            cmd_sync(u)
+        elif what == "get":
+            cmd_sync(u, argv[2:])
+        else:
+            emit(ok=False, error="unknown command %r" % what)
+            return 2
+    except Exception as e:
+        emit(ok=False, error=repr(e)[:300])
+        return 1
+    finally:
+        try:
+            self_shutdown = u.lib.SteamAPI_Shutdown
+            self_shutdown()
+        except Exception:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
