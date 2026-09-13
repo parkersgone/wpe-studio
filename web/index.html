@@ -69,10 +69,19 @@
           <button data-sort="favorite">Favorites</button>
         </div>
         <label class="chk"><input type="checkbox" id="hideBroken"> Hide unsupported</label>
+        <button class="btn subtle" id="btnSelect">Select</button>
         <div class="spacer"></div>
         <label class="zoom"><i class="fa">&#xf00a;</i>
           <input type="range" id="zoom" min="120" max="320" step="10" value="188">
         </label>
+      </div>
+      <div class="selbar" id="selbar" hidden>
+        <span id="selCount">0 selected</span>
+        <span class="spacer"></span>
+        <button class="btn subtle" id="selAll">Select all shown</button>
+        <button class="btn subtle" id="selNone">Clear</button>
+        <button class="btn" id="selUnsub">Unsubscribe in Steam</button>
+        <button class="btn danger" id="selDelete">Delete from disk</button>
       </div>
       <div class="grid" id="grid"></div>
     </div>
@@ -189,6 +198,11 @@
       <h2>Appearance</h2>
       <div class="settingrow"><div><b>Skin</b></div><select id="setSkin"></select></div>
       <div class="settingrow">
+        <div><b>Window opacity</b>
+          <div class="muted" id="opacityHint">Needs a compositor. Applies straight away.</div></div>
+        <span class="sliderwrap"><input type="range" id="setOpacity" min="40" max="100" step="5"><output id="outOpacity"></output></span>
+      </div>
+      <div class="settingrow">
         <div><b>Translate labels to English</b>
           <div class="muted" id="translateHint"></div></div>
         <label class="switch"><input type="checkbox" id="setTranslate"><span></span></label>
@@ -232,6 +246,20 @@
       <span class="spacer"></span>
       <button class="btn" id="wtBack">Back</button>
       <button class="btn primary" id="wtNext">Next</button>
+    </div>
+  </div>
+</div>
+
+<div class="wt" id="confirm" hidden>
+  <div class="wtcard" style="width:min(560px,92vw)">
+    <div class="wtbody" style="min-height:0">
+      <h2 id="cfTitle"></h2>
+      <div id="cfBody"></div>
+    </div>
+    <div class="wtfoot">
+      <span class="spacer"></span>
+      <button class="btn" id="cfCancel">Cancel</button>
+      <button class="btn danger" id="cfOk">Delete</button>
     </div>
   </div>
 </div>

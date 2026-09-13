@@ -468,6 +468,71 @@ class Handler(BaseHTTPRequestHandler):
             state.update(_f)
             return self._send(200, {"ok": True})
 
+        if p == "/api/delete/preview":
+            # What would happen, before anything is destroyed. The UI shows this
+            # in the confirmation so the number of files and the reclaimed space
+            # are real rather than estimated.
+            ids = [str(i) for i in (b.get("ids") or [])]
+            st = state.load()
+            running = {str(c.get("id")) for c in (st["monitors"] or {}).values()}
+            out, total = [], 0
+            for wid in ids:
+                it, reason = library.deletable(wid)
+                size = library.size_of(wid) if it else 0
+                total += size if (it and reason is None) else 0
+                out.append({
+                    "id": wid,
+                    "title": (it or {}).get("title", wid),
+                    "size": size,
+                    "blocked": it is None,
+                    "reason": reason,
+                    "running": wid in running,
+                })
+            return self._send(200, {"items": out, "bytes": total,
+                                    "deletable": len([x for x in out if not x["blocked"]])})
+
+        if p == "/api/delete":
+            ids = [str(i) for i in (b.get("ids") or [])]
+            if not ids:
+                return self._send(400, {"error": "nothing selected"})
+
+            results, freed = [], 0
+            for wid in ids:
+                # Stop it first; deleting the files under a running renderer
+                # leaves a process reading a directory that no longer exists.
+                for name, cfg in (state.load()["monitors"] or {}).items():
+                    if str(cfg.get("id")) == wid and engine.running_pid(name):
+                        engine.stop(name)
+
+                ok, size, err = library.delete(wid)
+                freed += size
+                results.append({"id": wid, "ok": ok, "bytes": size, "error": err})
+
+            gone = {r["id"] for r in results if r["ok"]}
+
+            # Forget everything we recorded about the wallpapers that are gone,
+            # or the state file accumulates entries for things that no longer
+            # exist and playlists silently skip missing items forever.
+            def _f(st):
+                for wid in gone:
+                    st["props"].pop(wid, None)
+                    st["presets"].pop(wid, None)
+                    (st.get("incompatible") or {}).pop(wid, None)
+                st["favorites"] = [f for f in st["favorites"] if f not in gone]
+                for pl in (st.get("playlists") or {}).values():
+                    pl["items"] = [i for i in pl["items"] if i not in gone]
+                for name, cfg in list((st.get("monitors") or {}).items()):
+                    if str(cfg.get("id")) in gone:
+                        cfg["id"] = None
+            state.update(_f)
+
+            return self._send(200, {
+                "ok": all(r["ok"] for r in results),
+                "freed": freed,
+                "results": results,
+                "items": library.scan(force=True),
+            })
+
         if p == "/api/rescan":
             return self._send(200, {"ok": True, "items": library.scan(force=True)})
 

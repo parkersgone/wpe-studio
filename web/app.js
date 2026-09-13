@@ -18,7 +18,9 @@ const App = {
   filters: { q: "", type: new Set(), source: new Set(), rating: new Set(), tags: new Set() },
   sort: "recent",
   ws: { page: 1, sort: "trend", q: "" },
-  scripted: new Set(),   // wallpapers whose options cannot take effect here
+  scripted: new Set(),   // wallpapers driven by their own scene script
+  selecting: false,
+  picked: new Set(),
   plPicked: new Set(),
 };
 
@@ -64,6 +66,9 @@ async function boot() {
   App.boot = b;
   App.items = b.library;
   document.body.dataset.skin = b.state.global.skin || "dark";
+  const a = (b.state.global.opacity ?? 100) / 100;
+  document.documentElement.style.setProperty("--alpha", a.toFixed(2));
+  document.documentElement.style.setProperty("--blur", a < 1 ? "18px" : "0px");
   App.monitor = App.monitor || (b.monitors[0] && b.monitors[0].name);
 
   renderCapabilities();
@@ -219,7 +224,8 @@ function tileHTML(it, live, fav) {
   const mature = it.contentrating && it.contentrating !== "Everyone";
   const bad = (App.boot.state.incompatible || {})[it.id];
   const preset = it.type === "preset";
-  return `<div class="tile ${live ? "live" : ""} ${App.sel === it.id ? "selected" : ""}" data-id="${esc(it.id)}">
+  return `<div class="tile ${live ? "live" : ""} ${App.sel === it.id ? "selected" : ""} ${
+      App.picked.has(it.id) ? "picked" : ""}" data-id="${esc(it.id)}">
     ${it.has_preview
       ? `<img loading="lazy" src="${withToken("/preview/" + encodeURIComponent(it.id))}" alt="">`
       : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
@@ -230,9 +236,10 @@ function tileHTML(it, live, fav) {
       ${preset ? `<span class="badge preset">Preset</span>` : ""}
       ${bad ? `<span class="badge broken" title="${esc(bad)}">Unsupported</span>` : ""}
       ${App.scripted.has(it.id) ? `<span class="badge scripted"
-        title="Options are driven by a scene script the Linux renderer does not run">opts n/a</span>` : ""}
+        title="Driven by a scene script — some of these respond to clicking the wallpaper">script</span>` : ""}
       ${mature ? `<span class="badge mature">${esc(it.contentrating)}</span>` : ""}
     </div>
+    <div class="pick">${App.picked.has(it.id) ? "✓" : ""}</div>
     <div class="fav ${fav ? "on" : ""}" data-fav="${esc(it.id)}"><i class="fa">&#xf005;</i></div>
     <div class="cap">${esc(it.title)}</div>
   </div>`;
@@ -258,12 +265,144 @@ $("#grid").addEventListener("click", async (e) => {
     return;
   }
   const t = e.target.closest(".tile");
-  if (t) openDetail(t.dataset.id);
+  if (!t) return;
+  if (App.selecting) {
+    const id = t.dataset.id;
+    App.picked.has(id) ? App.picked.delete(id) : App.picked.add(id);
+    renderGrid();
+    renderSelbar();
+    return;
+  }
+  openDetail(t.dataset.id);
 });
+// Double-click applies, the same as the Apply button. It also selects, so the
+// properties panel is showing the wallpaper that just went up rather than
+// whatever was open before.
 $("#grid").addEventListener("dblclick", (e) => {
   const t = e.target.closest(".tile");
-  if (t) applyWallpaper(t.dataset.id);
+  if (!t || App.selecting) return;      // while selecting, a double click is two picks
+  openDetail(t.dataset.id);
+  applyWallpaper(t.dataset.id);
 });
+
+// Same in the playlist picker's grid and the walkthrough's, so the gesture
+// means one thing everywhere.
+$("#plGrid").addEventListener("dblclick", (e) => {
+  const t = e.target.closest("[data-pl]");
+  if (t) applyWallpaper(t.dataset.pl);
+});
+
+/* ── selection and deletion ───────────────────────────────────────── */
+const fmtBytes = (n) => {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n < 10 && i ? 1 : 0)} ${u[i]}`;
+};
+
+function renderSelbar() {
+  $("#selCount").textContent = App.picked.size + " selected";
+  $("#selDelete").disabled = App.picked.size === 0;
+  $("#selUnsub").disabled = App.picked.size === 0;
+}
+
+function setSelecting(on) {
+  App.selecting = on;
+  document.body.classList.toggle("selecting", on);
+  $("#selbar").hidden = !on;
+  $("#btnSelect").textContent = on ? "Done selecting" : "Select";
+  if (!on) App.picked.clear();
+  renderGrid();
+  renderSelbar();
+}
+
+$("#btnSelect").onclick = () => setSelecting(!App.selecting);
+$("#selNone").onclick = () => { App.picked.clear(); renderGrid(); renderSelbar(); };
+$("#selAll").onclick = () => {
+  filtered().forEach((it) => App.picked.add(it.id));
+  renderGrid();
+  renderSelbar();
+};
+
+// Unsubscribing is Steam's to do -- it owns the subscription, and deleting the
+// folder behind its back just makes it download the wallpaper again. So this
+// takes you to the page with the button on it.
+$("#selUnsub").onclick = () => openUnsubscribe([...App.picked]);
+
+function openUnsubscribe(ids) {
+  if (!ids.length) return;
+  if (ids.length === 1) {
+    const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + ids[0];
+    if (embedded) {
+      $('.tab[data-view="workshop"]').click();
+      showSteam(true, url, true);
+    } else {
+      api("/api/steam", { action: "open_item", id: ids[0] });
+    }
+    toast("Hit Unsubscribe on the page, then Rescan");
+    return;
+  }
+  const url = "https://steamcommunity.com/my/myworkshopfiles/?appid=431960&browsefilter=mysubscriptions";
+  if (embedded) {
+    $('.tab[data-view="workshop"]').click();
+    showSteam(true, url, true);
+  } else {
+    api("/api/steam", { action: "open_url", url });
+  }
+  toast("Steam's subscriptions page — it can unsubscribe in bulk");
+}
+
+$("#selDelete").onclick = () => confirmDelete([...App.picked]);
+
+async function confirmDelete(ids) {
+  if (!ids.length) return;
+  const p = await api("/api/delete/preview", { ids });
+  if (p.error) return toast(p.error, true);
+
+  const rows = p.items.map((x) => `
+    <div class="cfrow ${x.blocked ? "blocked" : ""}">
+      <span>${x.blocked ? "✕" : x.reason ? "!" : "•"}</span>
+      <span style="flex:1;min-width:0">${esc(x.title)}
+        ${x.reason ? `<br><small style="color:var(--fg3)">${esc(x.reason)}</small>` : ""}
+        ${x.running ? `<br><small style="color:var(--orange)">currently on screen — it will be stopped</small>` : ""}
+      </span>
+      <span class="sz">${x.blocked ? "skipped" : fmtBytes(x.size)}</span>
+    </div>`).join("");
+
+  $("#cfTitle").textContent =
+    p.deletable === 1 ? "Delete this wallpaper?" : `Delete ${p.deletable} wallpapers?`;
+  $("#cfBody").innerHTML = `
+    <p class="muted">Removes the files from disk and frees <b>${fmtBytes(p.bytes)}</b>.
+    This does not unsubscribe — if you are still subscribed, Steam will download
+    them again. Use <b>Unsubscribe in Steam</b> first if you want them gone for good.</p>
+    <div class="cflist">${rows}</div>`;
+  $("#cfOk").disabled = p.deletable === 0;
+  $("#cfOk").textContent = p.deletable === 0 ? "Nothing to delete"
+                                             : `Delete ${p.deletable}`;
+  $("#confirm").hidden = false;
+
+  $("#cfCancel").onclick = () => { $("#confirm").hidden = true; };
+  $("#cfOk").onclick = async () => {
+    $("#confirm").hidden = true;
+    toast("Deleting…");
+    const r = await api("/api/delete", { ids });
+    if (r.items) App.items = r.items;
+    const failed = (r.results || []).filter((x) => !x.ok);
+    toast(failed.length ? `Freed ${fmtBytes(r.freed)}, ${failed.length} skipped`
+                        : `Deleted — freed ${fmtBytes(r.freed)}`, !!failed.length);
+    App.picked.clear();
+    if (App.sel && !App.items.some((i) => i.id === App.sel)) {
+      App.sel = null;
+      App.detail = null;
+      $("#detail").innerHTML = `<div class="empty">No wallpaper selected</div>`;
+    }
+    App.boot.state = await api("/api/state");
+    renderFilters();
+    renderGrid();
+    renderSelbar();
+  };
+}
 
 /* ── detail panel ─────────────────────────────────────────────────── */
 async function openDetail(id) {
@@ -308,6 +447,10 @@ function drawDetail() {
       <button class="btn" id="dFav">${d.favorite ? "★ Favorited" : "☆ Favorite"}</button>
       <button class="btn" id="dSteam">Steam page</button>
     </div>
+    <div class="btnrow">
+      <button class="btn" id="dUnsub">Unsubscribe</button>
+      <button class="btn danger" id="dDelete">Delete</button>
+    </div>
     ${it.type === "preset" ? `<div class="warnbox" style="font-size:11px">
         <b>Preset.</b> A saved option set for
         <b>${esc(it.dependency_title || it.dependency)}</b>${it.dependency_ok ? "" : " — not subscribed"}.
@@ -319,13 +462,18 @@ function drawDetail() {
   `;
 
   const scripted = d.script_driven;
-  const scriptWarn = scripted ? `<div class="warnbox" style="font-size:11px">
-      <b>These options will not do anything.</b> This wallpaper changes itself
-      through a scene script (<code>applyUserProperties</code>), and
-      linux-wallpaperengine does not run that hook — so the value is stored and
-      handed to the renderer, and nothing consumes it.
-      <br><br>Options work on <b>web</b> wallpapers and on scenes that map a
-      setting straight onto a colour, a layer or a shader.</div>` : "";
+  // These used to be inert. The engine now runs the scene-script hooks
+  // (applyUserProperties / cursorClick), so the note explains the behaviour
+  // rather than apologising for it -- including that some of these wallpapers
+  // are driven by CLICKING them, which is not discoverable otherwise.
+  const scriptWarn = scripted ? `<div class="warnbox"
+      style="font-size:11px;color:#cfe3ff;background:rgba(65,131,245,.10);border-color:var(--accent)">
+      <b>Script-driven wallpaper.</b> Its options run through a scene script, which
+      this build now executes. Two things worth knowing:
+      <br>• Some of these react to being <b>clicked</b> rather than to a setting —
+      if an option looks like it does nothing, try clicking the wallpaper.
+      <br>• A few authors ship options they never wired up; those are dead in the
+      wallpaper itself, not here.</div>` : "";
 
   const editable = d.properties.filter((p) => p.type !== "group" || true);
   const props = editable.length
@@ -349,6 +497,8 @@ function drawDetail() {
     d.favorite = r.favorites.includes(it.id);
     drawDetail(); renderGrid();
   };
+  $("#dUnsub").onclick = () => openUnsubscribe([it.id]);
+  $("#dDelete").onclick = () => confirmDelete([it.id]);
   $("#dSteam").onclick = () => {
     const wid = it.workshopid || it.id;
     const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + wid;
@@ -611,6 +761,22 @@ function renderSettings() {
   bindSetting("#setParticles", "particles", "bool");
   bindSetting("#setMouse", "mouse", "bool");
   bindSetting("#setParallax", "parallax", "bool");
+
+  const op = $("#setOpacity");
+  const applyOpacity = (v) => {
+    document.documentElement.style.setProperty("--alpha", (v / 100).toFixed(2));
+    // Blur only when there is something behind to blur; at full opacity it is
+    // pure cost for no visible difference.
+    document.documentElement.style.setProperty("--blur", v < 100 ? "18px" : "0px");
+    $("#outOpacity").textContent = v + "%";
+  };
+  op.value = g.opacity ?? 100;
+  applyOpacity(Number(op.value));
+  op.oninput = () => applyOpacity(Number(op.value));
+  op.onchange = async () => {
+    await api("/api/settings", { global: { opacity: Number(op.value) }, apply: false });
+    App.boot.state.global.opacity = Number(op.value);
+  };
 
   const tr = $("#setTranslate");
   const trInfo = App.boot.translate || {};
@@ -927,9 +1093,9 @@ const WT = {
     {
       title: "That's it",
       body: () => `<p>A few things worth knowing:</p>
-        <div class="wtrow"><span class="ico">◆</span><span class="what">Some wallpapers' own options do nothing
-          <small>If a wallpaper drives itself with a scene script, the renderer does not run that hook yet.
-          Those are flagged on the tile.</small></span></div>
+        <div class="wtrow"><span class="ico">◆</span><span class="what">Some wallpapers react to clicks
+          <small>Ones marked <b>script</b> on the tile run their own logic — several switch
+          state when you click the wallpaper rather than through a setting.</small></span></div>
         <div class="wtrow"><span class="ico">◆</span><span class="what">Labels in another language
           <small>Settings ▸ Translate labels to English, done locally.</small></span></div>
         <div class="wtrow"><span class="ico">◆</span><span class="what">It keeps running without this window

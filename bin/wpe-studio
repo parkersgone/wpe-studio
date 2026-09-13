@@ -111,12 +111,25 @@ def open_window(url):
 
     dark = Gdk.RGBA(0.13, 0.13, 0.13, 1.0)
 
+    # Ask for an RGBA visual so the page can be translucent if the user wants
+    # it. The WebView is given a fully transparent background and the PAGE
+    # paints its own -- that way the opacity setting takes effect immediately
+    # instead of needing the window reopened. With no compositor there is no
+    # RGBA visual, so we stay opaque and the setting simply does nothing.
+    screen = win.get_screen()
+    visual = screen.get_rgba_visual()
+    translucent = visual is not None and screen.is_composited()
+
+    if translucent:
+        win.set_visual(visual)
+        win.set_app_paintable(True)
+
     view = WebKit2.WebView()
     s = view.get_settings()
     s.set_enable_developer_extras(True)
     s.set_enable_write_console_messages_to_stdout(True)
     s.set_javascript_can_access_clipboard(True)
-    view.set_background_color(dark)
+    view.set_background_color(Gdk.RGBA(0, 0, 0, 0) if translucent else dark)
 
     # --- the embedded Steam view -------------------------------------------
     # A second WebView rather than an iframe: steamcommunity.com sets

@@ -13,6 +13,7 @@ absolute path instead.
 import json
 import os
 import re
+import shutil
 import time
 
 from . import paths
@@ -450,3 +451,56 @@ def properties(wid, overrides=None):
 def defaults_for(wid):
     return {p["key"]: p["default"] for p in properties(wid)
             if p["type"] not in ("group", "text")}
+
+
+# --- removing wallpapers ------------------------------------------------------
+
+def deletable(wid):
+    """(item, reason) -- reason is None when it is safe to delete.
+
+    Deleting is the one irreversible thing this app does, so the checks live
+    here rather than in the HTTP layer: a bad path must be refused no matter
+    which caller asked.
+    """
+    it = get(wid)
+    if not it:
+        return None, "not found"
+
+    target = os.path.realpath(it["dir"])
+
+    # Must sit directly inside one of the directories we scan. realpath on both
+    # sides, so a symlinked wallpaper cannot point the delete somewhere else.
+    for _src, base in _sources():
+        root = os.path.realpath(base)
+        if os.path.dirname(target) == root and target != root:
+            break
+    else:
+        return None, "outside the wallpaper directories"
+
+    if it["source"] == "default":
+        return None, "ships with Wallpaper Engine"
+
+    # A preset is useless without its base, but the base may be wanted alone;
+    # only warn about the direction that loses data silently.
+    dependents = [o["id"] for o in scan()
+                  if o.get("dependency") == it["id"] and o["id"] != it["id"]]
+    if dependents:
+        return it, "presets depend on it: " + ", ".join(dependents[:3])
+
+    return it, None
+
+
+def delete(wid):
+    """Remove a wallpaper from disk. Returns (ok, bytes_freed, error)."""
+    it, reason = deletable(wid)
+    if it is None:
+        return False, 0, reason
+
+    size = _dirsize(it["dir"])
+    try:
+        shutil.rmtree(it["dir"])
+    except OSError as e:
+        return False, 0, str(e)
+
+    scan(force=True)
+    return True, size, None
