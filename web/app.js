@@ -261,7 +261,7 @@ $("#grid").addEventListener("click", async (e) => {
     e.stopPropagation();
     const r = await api("/api/favorite", { id: fav.dataset.fav });
     App.boot.state.favorites = r.favorites;
-    renderGrid();
+    fav.classList.toggle("on", r.favorites.includes(fav.dataset.fav));
     return;
   }
   const t = e.target.closest(".tile");
@@ -405,15 +405,39 @@ async function confirmDelete(ids) {
 }
 
 /* ── detail panel ─────────────────────────────────────────────────── */
+// Update the grid IN PLACE rather than re-rendering it.
+//
+// renderGrid() replaces #grid.innerHTML, which destroys the tile you just
+// clicked. The second click of a double click then lands on a brand new
+// element, the browser never fires dblclick, and double-click-to-apply
+// silently does nothing. Selecting a wallpaper must not rebuild the grid.
+function markSelected(id) {
+  for (const el of $$("#grid .tile")) {
+    el.classList.toggle("selected", el.dataset.id === id);
+  }
+}
+
+function refreshTileBadges(id) {
+  const el = $(`#grid .tile[data-id="${CSS.escape(id)}"] .badges`);
+  const it = App.items.find((x) => x.id === id);
+  if (!el || !it) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = tileHTML(it, runningIds().has(id),
+                           (App.boot.state.favorites || []).includes(id));
+  const fresh = tmp.querySelector(".badges");
+  if (fresh) el.innerHTML = fresh.innerHTML;
+}
+
 async function openDetail(id) {
   App.sel = id;
-  renderGrid();
+  markSelected(id);
   const d = await api("/api/wallpaper/" + encodeURIComponent(id));
   if (d.error) { toast(d.error, true); return; }
   App.detail = d;
+  const had = App.scripted.has(id);
   if (d.script_driven) App.scripted.add(id); else App.scripted.delete(id);
   drawDetail();
-  renderGrid();
+  if (had !== App.scripted.has(id)) refreshTileBadges(id);
 }
 
 function fmtSize(n) {
@@ -688,10 +712,19 @@ $("#btnStop").onclick = async () => {
   refreshStatus();
 };
 
+let lastLiveKey = "";
+
 async function refreshStatus() {
   App.boot.status = await api("/api/status");
   App.boot.state = await api("/api/state");
-  renderGrid();
+  // Only rebuild the grid when something it displays actually changed.
+  // Rebuilding on a 6s timer was destroying tiles mid-gesture.
+  const liveKey = [...runningIds()].sort().join(",") + "|"
+    + (App.boot.state.favorites || []).join(",") + "|" + App.items.length;
+  if (liveKey !== lastLiveKey) {
+    lastLiveKey = liveKey;
+    renderGrid();
+  }
   renderMonitors();
   renderStatus();
   // Never redraw the properties panel while it is being edited. drawDetail()
@@ -761,6 +794,14 @@ function renderSettings() {
   bindSetting("#setParticles", "particles", "bool");
   bindSetting("#setMouse", "mouse", "bool");
   bindSetting("#setParallax", "parallax", "bool");
+
+  const tp = $("#setTrayPanel");
+  tp.checked = g.tray_panel !== false;
+  tp.onchange = async () => {
+    await api("/api/settings", { global: { tray_panel: tp.checked }, apply: false });
+    App.boot.state.global.tray_panel = tp.checked;
+    toast(tp.checked ? "Tray icon opens the panel" : "Tray icon opens a menu");
+  };
 
   const op = $("#setOpacity");
   const applyOpacity = (v) => {

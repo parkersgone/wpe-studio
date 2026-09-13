@@ -121,6 +121,10 @@ class Rotator(threading.Thread):
 
 ROTATOR = Rotator()
 
+# Set when the tray panel should dismiss itself. It runs in its own process, so
+# this is the cheapest channel that does not need a second socket.
+_MINI_CLOSE = threading.Event()
+
 
 # --- helpers ----------------------------------------------------------------
 
@@ -240,6 +244,8 @@ class Handler(BaseHTTPRequestHandler):
     def _get(self, p, q):
         if p in ("/", "/index.html"):
             return self._file(os.path.join(paths.WEB_DIR, "index.html"), "text/html")
+        if p in ("/mini", "/mini.html"):
+            return self._file(os.path.join(paths.WEB_DIR, "mini.html"), "text/html")
         if p in ("/app.css", "/app.js"):
             return self._file(os.path.join(paths.WEB_DIR, p.lstrip("/")))
 
@@ -297,6 +303,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, deps.report())
         if p == "/api/translate":
             return self._send(200, translate.available())
+        if p == "/api/mini-should-close":
+            should = _MINI_CLOSE.is_set()
+            if should:
+                _MINI_CLOSE.clear()
+            return self._send(200, {"close": should})
         if p == "/api/log":
             mon = (q.get("monitor") or [engine.monitors()[0]["name"]])[0]
             return self._send(200, {"log": engine.tail_log(mon, 200)})
@@ -532,6 +543,19 @@ class Handler(BaseHTTPRequestHandler):
                 "results": results,
                 "items": library.scan(force=True),
             })
+
+        if p == "/api/open-app":
+            subprocess.Popen([os.path.join(paths.BIN_DIR, "wpe-studio")],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True)
+            _MINI_CLOSE.set()
+            return self._send(200, {"ok": True})
+
+        if p == "/api/close-mini":
+            # The panel is a separate process; it polls this so Escape and
+            # "open the full app" can close it without a second IPC channel.
+            _MINI_CLOSE.set()
+            return self._send(200, {"ok": True})
 
         if p == "/api/rescan":
             return self._send(200, {"ok": True, "items": library.scan(force=True)})

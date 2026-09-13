@@ -128,6 +128,18 @@ def open_ui(_w=None, tab=""):
                      stdin=subprocess.DEVNULL, start_new_session=True)
 
 
+def open_panel(*_a):
+    """The mini panel, as its own process -- see bin/wpe-panel for why."""
+    subprocess.Popen([os.path.join(paths.BIN_DIR, "wpe-panel")],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+def panel_mode():
+    st = api("/api/state") or {}
+    return bool((st.get("global") or {}).get("tray_panel", True))
+
+
 def main():
     import gi
     gi.require_version("Gtk", "3.0")
@@ -138,6 +150,20 @@ def main():
 
     def build_menu():
         menu = Gtk.Menu()
+
+        if panel_mode():
+            # AppIndicator gives no click-activate signal, so "open the panel"
+            # has to be a menu entry. Keep it to one so it is effectively a
+            # button rather than the grey list this replaces.
+            mi = Gtk.MenuItem(label="Open Wallpaper panel")
+            mi.connect("activate", open_panel)
+            menu.append(mi)
+            menu.append(Gtk.SeparatorMenuItem())
+            quit_item = Gtk.MenuItem(label="Quit tray")
+            quit_item.connect("activate", lambda _w: Gtk.main_quit())
+            menu.append(quit_item)
+            menu.show_all()
+            return menu
 
         def item(label, fn, sensitive=True):
             mi = Gtk.MenuItem(label=label)
@@ -213,7 +239,8 @@ def main():
             si.set_icon_name(icon)
             si.set_tooltip_text("Wallpaper Engine")
             si.set_primary_menu(build_menu())
-            si.connect("activate", lambda *_a: open_ui())
+            si.connect("activate",
+                       lambda *_a: open_panel() if panel_mode() else open_ui())
             GLib.timeout_add_seconds(
                 20, lambda: (si.set_primary_menu(build_menu()), True)[1])
             attached = "XApp.StatusIcon"
@@ -232,7 +259,8 @@ def main():
         else:
             si.set_from_icon_name(icon)
         si.set_tooltip_text("Wallpaper Engine")
-        si.connect("activate", lambda *_a: open_ui())
+        si.connect("activate",
+                   lambda *_a: open_panel() if panel_mode() else open_ui())
         si.connect("popup-menu", lambda _i, button, time:
                    build_menu().popup(None, None, None, None, button, time))
         attached = "Gtk.StatusIcon"

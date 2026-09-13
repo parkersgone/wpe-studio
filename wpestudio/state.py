@@ -34,6 +34,7 @@ DEFAULTS = {
         "restore_on_launch": True,
         "translate": False,          # run non-Latin labels through a local model
         "opacity": 100,              # window background opacity, 40-100
+        "tray_panel": True,          # tray click opens the mini panel, not a menu
         "seen_walkthrough": False,
     },
     "monitors": {},     # name -> {"id": str|None}

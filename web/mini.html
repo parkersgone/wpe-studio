@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wallpaper Engine</title>
+<!--
+  The tray panel. Clicking a tray icon and getting a grey list of menu items
+  tells you nothing about wallpapers, which are pictures. This shows them.
+
+  Deliberately not a smaller copy of the main window: no filters, no Workshop,
+  no properties. Pick a wallpaper, change the handful of settings you actually
+  change often, get out. Anything more and the full app is one click away.
+-->
+<style>
+:root{
+  --bg:#1b1b1b; --bg2:#222; --bg3:#2b2b2b; --line:#3a3a3a;
+  --fg:#fff; --fg2:#bdbdbd; --fg3:#8a8a8a; --accent:#4183f5; --orange:#ff721d;
+  --danger:#d9534f;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+  font:12px/1.45 Arial,"Helvetica Neue",Helvetica,sans-serif;
+  user-select:none;cursor:default;
+}
+.wrap{display:grid;grid-template-columns:1fr 186px;height:100%}
+
+/* ── wallpapers ─────────────────────────────────────────────────── */
+.left{display:flex;flex-direction:column;min-width:0;min-height:0}
+.head{
+  display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:var(--bg2);
+}
+.head input{
+  flex:1;min-width:0;background:var(--bg3);border:1px solid var(--line);
+  color:var(--fg);border-radius:3px;padding:4px 8px;font:inherit;outline:none;
+}
+.head input:focus{border-color:var(--accent)}
+.seg{display:flex;border:1px solid var(--line);border-radius:3px;overflow:hidden;flex:none}
+.seg button{background:var(--bg3);border:0;color:var(--fg2);padding:4px 8px;font:inherit;cursor:pointer}
+.seg button.on{background:var(--accent);color:#fff}
+.grid{
+  flex:1;min-height:0;overflow-y:auto;padding:8px;display:grid;gap:6px;
+  grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
+  /* Grid items stretch by default, which overrides the tile's aspect-ratio and
+     turns every thumbnail into a strip. */
+  grid-auto-rows:min-content;align-content:start;align-items:start;
+}
+.tile{
+  position:relative;aspect-ratio:16/10;border-radius:3px;overflow:hidden;
+  background:var(--bg3);cursor:pointer;border:2px solid transparent;
+}
+.tile img{width:100%;height:100%;object-fit:cover;display:block}
+.tile .noimg{width:100%;height:100%;display:grid;place-items:center;color:var(--fg3)}
+.tile:hover{border-color:var(--line)}
+.tile.live{border-color:var(--orange)}
+.tile .cap{
+  position:absolute;left:0;right:0;bottom:0;padding:10px 5px 3px;font-size:10px;
+  background:linear-gradient(transparent,rgba(0,0,0,.85));
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.tile .star{position:absolute;top:3px;right:4px;font-size:10px;color:var(--orange)}
+
+/* ── settings column ────────────────────────────────────────────── */
+.right{
+  border-left:1px solid var(--line);background:var(--bg2);
+  display:flex;flex-direction:column;min-height:0;
+}
+.now{padding:9px 10px;border-bottom:1px solid var(--line)}
+.now .t{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.now .s{font-size:10.5px;color:var(--fg3);margin-top:2px}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--fg3);margin-right:5px}
+.dot.on{background:var(--orange)}
+.opts{flex:1;overflow-y:auto;padding:8px 10px}
+.opt{margin-bottom:9px}
+.opt label{display:block;color:var(--fg2);font-size:10.5px;margin-bottom:3px}
+.opt .row{display:flex;align-items:center;gap:6px}
+.opt input[type=range]{flex:1;accent-color:var(--accent)}
+.opt output{width:34px;text-align:right;color:var(--fg3);font-size:10.5px}
+.opt select{
+  width:100%;background:var(--bg3);border:1px solid var(--line);color:var(--fg);
+  border-radius:3px;padding:4px 22px 4px 6px;font:inherit;
+  /* WebKit paints a closed select with the OPTION colours, which default to
+     black on white -- without this it reads as an empty box. */
+  -webkit-appearance:none;appearance:none;
+  background-image:
+    linear-gradient(45deg,transparent 50%,var(--fg2) 50%),
+    linear-gradient(135deg,var(--fg2) 50%,transparent 50%);
+  background-position:right 11px center,right 7px center;
+  background-size:4px 4px,4px 4px;background-repeat:no-repeat;
+}
+.opt select option{background:var(--bg3);color:var(--fg)}
+.tog{display:flex;align-items:center;justify-content:space-between;padding:4px 0;color:var(--fg2)}
+.switch{position:relative;width:32px;height:17px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--line);
+  border-radius:9px;transition:.15s}
+.switch span::before{content:"";position:absolute;width:11px;height:11px;left:2px;top:2px;
+  background:var(--fg3);border-radius:50%;transition:.15s}
+.switch input:checked + span{background:var(--accent);border-color:var(--accent)}
+.switch input:checked + span::before{transform:translateX(15px);background:#fff}
+.foot{padding:8px 10px;border-top:1px solid var(--line);display:grid;gap:5px}
+.btn{
+  background:var(--bg3);color:var(--fg);border:1px solid var(--line);border-radius:3px;
+  padding:5px 8px;font:inherit;cursor:pointer;
+}
+.btn:hover{background:#3d3d3d}
+.btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:#444;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <div class="head">
+      <input id="q" type="search" placeholder="Search" autocomplete="off">
+      <div class="seg" id="filt">
+        <button data-f="all" class="on">All</button>
+        <button data-f="fav">★</button>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="right">
+    <div class="now">
+      <div class="t" id="nowTitle">—</div>
+      <div class="s" id="nowSub"><span class="dot"></span>idle</div>
+    </div>
+    <div class="opts">
+      <div class="opt"><label>Frame rate <output id="oFps"></output></label>
+        <div class="row"><input type="range" id="fps" min="5" max="144" step="1"></div></div>
+      <div class="opt"><label>Volume <output id="oVol"></output></label>
+        <div class="row"><input type="range" id="vol" min="0" max="100" step="1"></div></div>
+      <div class="tog"><span>Mute</span>
+        <label class="switch"><input type="checkbox" id="mute"><span></span></label></div>
+      <div class="tog"><span>Pause fullscreen</span>
+        <label class="switch"><input type="checkbox" id="pause"><span></span></label></div>
+      <div class="tog"><span>Parallax</span>
+        <label class="switch"><input type="checkbox" id="parallax"><span></span></label></div>
+      <div class="opt"><label>Scaling</label>
+        <select id="scaling">
+          <option>default</option><option>stretch</option><option>fit</option><option>fill</option>
+        </select></div>
+    </div>
+    <div class="foot">
+      <button class="btn danger" id="stop">Stop</button>
+      <button class="btn primary" id="open">Open full app</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const T = new URLSearchParams(location.search).get("t") || "";
+const url = (p) => T ? p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(T) : p;
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(p, body) {
+  const h = { "Content-Type": "application/json" };
+  if (T) h["Authorization"] = "Bearer " + T;
+  const r = await fetch(url(p), body === undefined ? (T ? { headers: h } : {})
+                                                  : { method: "POST", headers: h, body: JSON.stringify(body) });
+  const txt = await r.text();
+  try { return JSON.parse(txt); } catch { return { error: txt.slice(0, 200) }; }
+}
+
+let items = [], state = null, status = null, filter = "all", query = "";
+
+function live() {
+  const s = new Set();
+  for (const m of (status?.monitors || [])) if (m.running && m.id) s.add(String(m.id));
+  return s;
+}
+
+function render() {
+  const on = live();
+  const favs = new Set(state?.favorites || []);
+  const q = query.trim().toLowerCase();
+  const list = items.filter((it) => {
+    if (filter === "fav" && !favs.has(it.id)) return false;
+    if (q && !it.title.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  $("#grid").innerHTML = list.map((it) => `
+    <div class="tile ${on.has(it.id) ? "live" : ""}" data-id="${esc(it.id)}" title="${esc(it.title)}">
+      ${it.has_preview ? `<img loading="lazy" src="${url("/preview/" + encodeURIComponent(it.id))}" alt="">`
+                       : `<div class="noimg">▦</div>`}
+      ${favs.has(it.id) ? `<div class="star">★</div>` : ""}
+      <div class="cap">${esc(it.title)}</div>
+    </div>`).join("") || `<div style="color:var(--fg3);padding:12px">Nothing matches.</div>`;
+
+  const cur = (status?.monitors || []).find((m) => m.running);
+  $("#nowTitle").textContent = cur ? (cur.title || cur.id) : "Nothing running";
+  $("#nowSub").innerHTML = cur
+    ? `<span class="dot on"></span>${state.global.fps} fps · ${state.global.mute ? "muted" : state.global.volume + "%"}`
+    : `<span class="dot"></span>idle`;
+}
+
+function bind(id, key, kind) {
+  const el = $(id);
+  const g = state.global;
+  if (kind === "bool") el.checked = !!g[key]; else el.value = g[key];
+  const out = { fps: "#oFps", volume: "#oVol" }[key];
+  if (out) $(out).textContent = g[key];
+  el.oninput = () => { if (out) $(out).textContent = el.value; };
+  el.onchange = async () => {
+    const v = kind === "bool" ? el.checked : (kind === "num" ? Number(el.value) : el.value);
+    const r = await api("/api/settings", { global: { [key]: v } });
+    state.global = r.global;
+    render();
+  };
+}
+
+$("#grid").addEventListener("click", async (e) => {
+  const t = e.target.closest(".tile");
+  if (!t) return;
+  await api("/api/apply", { id: t.dataset.id });
+  status = await api("/api/status");
+  render();
+});
+$("#q").addEventListener("input", (e) => { query = e.target.value; render(); });
+$("#filt").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  [...$("#filt").children].forEach((x) => x.classList.toggle("on", x === b));
+  filter = b.dataset.f;
+  render();
+});
+$("#stop").onclick = async () => { await api("/api/stop", {}); status = await api("/api/status"); render(); };
+$("#open").onclick = () => api("/api/open-app", {});
+addEventListener("keydown", (e) => { if (e.key === "Escape") api("/api/close-mini", {}); });
+
+(async () => {
+  const b = await api("/api/bootstrap");
+  items = b.library; state = b.state; status = b.status;
+  bind("#fps", "fps", "num");
+  bind("#vol", "volume", "num");
+  bind("#mute", "mute", "bool");
+  bind("#pause", "pause_on_fullscreen", "bool");
+  bind("#parallax", "parallax", "bool");
+  bind("#scaling", "scaling");
+  render();
+  setInterval(async () => { status = await api("/api/status"); render(); }, 5000);
+})();
+</script>
+</body>
+</html>

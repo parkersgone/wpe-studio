@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""wpe-panel -- the little window the tray icon opens.
+
+A tray menu is a grey list of words. Wallpapers are pictures, so the thing you
+click a wallpaper icon to get should show them. This is a small undecorated
+window pinned near the tray with a thumbnail grid on one side and the handful of
+settings worth changing often on the other.
+
+It is a separate process from the tray on purpose: the tray must stay
+responsive and must not die with the panel, and GTK does not enjoy a second
+WebKit view being created and destroyed repeatedly inside a long-lived process.
+
+Dismissal: Escape, clicking away (focus-out), or the server raising the
+close flag when "Open full app" is pressed.
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from wpestudio import paths  # noqa: E402
+
+HOST = os.environ.get("WPE_BIND", "127.0.0.1")
+PORT = int(os.environ.get("WPE_PORT", "8014"))
+BASE = "http://%s:%d" % (HOST, PORT)
+
+WIDTH, HEIGHT = 620, 430
+MARGIN = 8
+
+
+def token():
+    """Only needed when the daemon is bound off loopback."""
+    if HOST in ("127.0.0.1", "::1", "localhost"):
+        return ""
+    try:
+        with open(os.path.join(paths.CONFIG_DIR, "api-token")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def should_close():
+    try:
+        with urllib.request.urlopen(BASE + "/api/mini-should-close", timeout=2) as r:
+            return bool(json.load(r).get("close"))
+    except Exception:
+        return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--x", type=int, default=-1, help="anchor x, screen coords")
+    ap.add_argument("--y", type=int, default=-1, help="anchor y, screen coords")
+    args = ap.parse_args()
+
+    import gi
+    gi.require_version("Gtk", "3.0")
+    try:
+        gi.require_version("WebKit2", "4.1")
+    except ValueError:
+        gi.require_version("WebKit2", "4.0")
+    from gi.repository import Gtk, Gdk, GLib, WebKit2
+
+    win = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+    win.set_decorated(False)
+    win.set_skip_taskbar_hint(True)
+    win.set_skip_pager_hint(True)
+    win.set_keep_above(True)
+    win.set_default_size(WIDTH, HEIGHT)
+    win.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+    win.set_accept_focus(True)
+    win.set_focus_on_map(True)
+
+    # Sit inside the work area, near the pointer, without overlapping the panel.
+    display = Gdk.Display.get_default()
+    seat_pos = None
+    try:
+        pointer = display.get_default_seat().get_pointer()
+        _s, px, py = pointer.get_position()
+        seat_pos = (px, py)
+    except Exception:
+        pass
+
+    ax = args.x if args.x >= 0 else (seat_pos[0] if seat_pos else 0)
+    ay = args.y if args.y >= 0 else (seat_pos[1] if seat_pos else 0)
+
+    try:
+        mon = display.get_monitor_at_point(ax, ay)
+        area = mon.get_workarea()
+    except Exception:
+        area = None
+
+    if area:
+        x = min(max(area.x + MARGIN, ax - WIDTH // 2),
+                area.x + area.width - WIDTH - MARGIN)
+        # Above the pointer if the tray is at the bottom, below it otherwise.
+        below = ay < area.y + area.height // 2
+        y = (ay + MARGIN) if below else (ay - HEIGHT - MARGIN)
+        y = min(max(area.y + MARGIN, y), area.y + area.height - HEIGHT - MARGIN)
+    else:
+        x, y = max(0, ax - WIDTH // 2), max(0, ay - HEIGHT - MARGIN)
+
+    view = WebKit2.WebView()
+    view.get_settings().set_enable_write_console_messages_to_stdout(True)
+    view.connect("load-failed", lambda _v, _e, uri, err:
+                 print("wpe-panel: load failed %s: %s" % (uri, err.message), flush=True))
+    view.connect("load-changed", lambda _v, ev:
+                 print("wpe-panel: load %s" % ev.value_nick, flush=True))
+    view.set_background_color(Gdk.RGBA(0.106, 0.106, 0.106, 1.0))
+    tok = token()
+    view.load_uri(BASE + "/mini" + ("?t=" + tok if tok else ""))
+    win.add(view)
+
+    def close(*_a):
+        if os.environ.get("WPE_PANEL_DEBUG"):
+            import traceback
+            print("wpe-panel: close() called from:", flush=True)
+            traceback.print_stack()
+        Gtk.main_quit()
+        return False
+
+    win.connect("destroy", close)
+    win.connect("key-press-event", lambda _w, ev:
+                close() if Gdk.keyval_name(ev.keyval) == "Escape" else False)
+
+    # Click-away dismissal, but ONLY after the window has actually held focus.
+    # A freshly mapped window emits focus-out before it is ever focused, so
+    # wiring this up naively closes the panel the instant it opens -- which
+    # looks exactly like it failed to launch.
+    # Two guards, because one is not enough. A freshly mapped window emits
+    # focus-out before it is ever focused; and on Cinnamon it can briefly take
+    # focus and hand it straight back to whatever launched it, which closed the
+    # panel a few hundred milliseconds after it appeared.
+    state = {"focused": False, "since": GLib.get_monotonic_time()}
+    grace_us = 1_500_000
+    autoclose = os.environ.get("WPE_PANEL_NO_AUTOCLOSE") != "1"
+
+    def on_focus_in(*_a):
+        state["focused"] = True
+        return False
+
+    def on_focus_out(*_a):
+        settled = GLib.get_monotonic_time() - state["since"] > grace_us
+        if autoclose and state["focused"] and settled:
+            close()
+        return False
+
+    win.connect("focus-in-event", on_focus_in)
+    win.connect("focus-out-event", on_focus_out)
+
+    # The page cannot close its own window, so it raises a flag on the daemon.
+    GLib.timeout_add(400, lambda: (close() if should_close() else True))
+
+    win.show_all()
+    # move() before the window is realised is advisory at best -- the WM placed
+    # it off-screen entirely. Position after showing, and clamp to the screen as
+    # a backstop in case the workarea lookup lied.
+    screen = win.get_screen()
+    sw, sh = screen.get_width(), screen.get_height()
+    x = max(0, min(x, sw - WIDTH))
+    y = max(0, min(y, sh - HEIGHT))
+    win.move(x, y)
+    win.present()
+    print("wpe-panel at %d,%d (screen %dx%d)" % (x, y, sw, sh), flush=True)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
