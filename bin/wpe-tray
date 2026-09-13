@@ -128,39 +128,22 @@ def open_ui(_w=None, tab=""):
                      stdin=subprocess.DEVNULL, start_new_session=True)
 
 
-_panel = {"proc": None}
-
-
-def panel_alive():
-    p = _panel["proc"]
-    return p is not None and p.poll() is None
-
-
 def toggle_panel(*_a):
-    """Clicking the tray icon opens the panel, clicking it again closes it.
+    """Open the panel, or close whichever one is open.
 
-    Tracked by process handle rather than by focus. Focus-based dismissal alone
-    is not enough: the panel does not always take focus when opened from the
-    tray, and then nothing ever closes it -- it just sat there permanently.
+    The decision lives in wpe-panel, keyed on a pid file, not in a handle held
+    here: a panel started any other way was invisible to this process, so the
+    tray opened a second one and then could not close either.
     """
-    if panel_alive():
-        try:
-            _panel["proc"].terminate()
-        except OSError:
-            pass
-        _panel["proc"] = None
-        return
-
-    _panel["proc"] = subprocess.Popen(
-        [os.path.join(paths.BIN_DIR, "wpe-panel")],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL, start_new_session=True)
+    subprocess.Popen([os.path.join(paths.BIN_DIR, "wpe-panel"), "--toggle"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
 
 
-# Kept for the menu entry, which should always open rather than toggle.
 def open_panel(*_a):
-    if not panel_alive():
-        toggle_panel()
+    subprocess.Popen([os.path.join(paths.BIN_DIR, "wpe-panel")],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
 
 
 def panel_mode():

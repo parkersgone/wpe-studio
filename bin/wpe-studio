@@ -185,6 +185,15 @@ def open_window(url):
         nav.pack_start(b, False, False, 0)
         return b
 
+    def leave_steam():
+        steam_box.hide()
+        view.run_javascript("window.__wpeLeaveSteam && window.__wpeLeaveSteam();",
+                            None, None, None)
+
+    # The way out. Escape does it too, but nothing on screen said so, and this
+    # view covers the whole app -- without a button you are simply stuck on
+    # steamcommunity.com.
+    nav_button("✕", leave_steam, "Back to Wallpaper Engine")
     nav_button("←", steam_view.go_back, "Back")
     nav_button("→", steam_view.go_forward, "Forward")
     nav_button("⟳", steam_view.reload, "Reload")
@@ -273,9 +282,7 @@ def open_window(url):
             view.get_inspector().show()
             return True
         if name == "Escape" and steam_box.get_visible():
-            steam_box.hide()
-            view.run_javascript("window.__wpeLeaveSteam && window.__wpeLeaveSteam();",
-                                None, None, None)
+            leave_steam()
             return True
         if ctrl and name in ("q", "Q", "w", "W"):
             Gtk.main_quit()

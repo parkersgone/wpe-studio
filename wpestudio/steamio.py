@@ -21,6 +21,7 @@ import html
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import time
@@ -278,13 +279,15 @@ def open_library():
 
 # --- workshop browse --------------------------------------------------------
 
-_ITEM_RE = re.compile(
-    r'<div class="workshopItem">(.*?)</div>\s*</div>', re.S)
-_ID_RE = re.compile(r'sharedfiles/filedetails/\?id=(\d+)')
-_IMG_RE = re.compile(r'<img[^>]+id="previewImage[^"]*"[^>]+src="([^"]+)"')
-_TITLE_RE = re.compile(r'class="workshopItemTitle[^"]*">(.*?)</div>', re.S)
-_AUTHOR_RE = re.compile(r'class="workshopItemAuthorName[^"]*">(.*?)</div>', re.S)
-_STARS_RE = re.compile(r'src="[^"]*/(\d+)-star[^"]*\.png"')
+# Steam's Workshop browse is a React app with hashed, churning class names --
+# the old `div.workshopItem` selector stopped matching anything and the grid
+# silently came back empty. These anchor on semantic markup instead: the link to
+# the item and the preview image's alt text, which is also the title. Less
+# pretty, considerably less likely to break again.
+_CARD_RE = re.compile(
+    r'<a\s+href="[^"]*sharedfiles/filedetails/\?id=(\d+)"[^>]*>\s*'
+    r'<img\s+([^>]*?)/?>', re.I)
+_ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
 
 
 def _strip(s):
@@ -318,22 +321,19 @@ def browse(query="", sort="trend", page=1, days=-1, tags=None, timeout=12):
     except Exception as e:
         return {"ok": False, "error": str(e), "items": [], "url": url}
 
-    items = []
-    for chunk in _ITEM_RE.findall(body):
-        m = _ID_RE.search(chunk)
-        if not m:
+    items, seen = [], set()
+    for wid, attrs in _CARD_RE.findall(body):
+        if wid in seen:
             continue
-        img = _IMG_RE.search(chunk)
-        stars = _STARS_RE.search(chunk)
+        seen.add(wid)
+        a = dict(_ATTR_RE.findall(attrs))
         items.append({
-            "id": m.group(1),
-            "title": _strip((_TITLE_RE.search(chunk) or [None, ""])[1]
-                            if _TITLE_RE.search(chunk) else ""),
-            "author": _strip(_AUTHOR_RE.search(chunk).group(1))
-                      if _AUTHOR_RE.search(chunk) else "",
-            "preview": img.group(1) if img else "",
-            "stars": int(stars.group(1)) if stars else 0,
-            "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=%s" % m.group(1),
+            "id": wid,
+            "title": _strip(a.get("alt", "")) or "(untitled)",
+            "author": "",
+            "preview": a.get("src", ""),
+            "stars": 0,
+            "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=%s" % wid,
         })
     return {"ok": True, "items": items, "url": url, "page": int(page)}
 
@@ -359,3 +359,82 @@ def item_details(ids, timeout=12):
     for d in (j.get("response") or {}).get("publishedfiledetails") or []:
         out[str(d.get("publishedfileid"))] = d
     return out
+
+
+# --- subscribing without leaving the app -------------------------------------
+#
+# The Workshop tab used to be the steamcommunity site in a WebView, which works
+# but does not look or behave like Wallpaper Engine's own browser. Rendering the
+# results natively means the Subscribe button has to do what the page's button
+# does: POST to /sharedfiles/subscribe with the logged-in session.
+#
+# The session is the one the embedded WebView already holds -- the same login
+# the user did in the Workshop tab -- read out of its cookie jar. Nothing new is
+# asked of them, and if they are not signed in there we fall back to opening the
+# item so they can press the real button.
+
+COOKIE_DB = os.path.join(paths.CONFIG_DIR, "steam-webview", "cookies.sqlite")
+
+
+def session_cookies():
+    """{name: value} of the steamcommunity cookies the embedded view holds."""
+    import sqlite3
+    out = {}
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % COOKIE_DB, uri=True)
+        for name, value in con.execute(
+            "SELECT name, value FROM moz_cookies WHERE host LIKE '%steamcommunity.com%'"
+        ):
+            out[name] = value
+        con.close()
+    except Exception:
+        pass
+    return out
+
+
+def signed_in():
+    return bool(session_cookies().get("steamLoginSecure"))
+
+
+def _post_form(url, fields, cookies, timeout=15):
+    body = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(url, data=body, headers={
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://steamcommunity.com",
+        "Referer": "https://steamcommunity.com/workshop/browse/?appid=%s" % APPID,
+        "X-Requested-With": "XMLHttpRequest",
+        "Cookie": "; ".join("%s=%s" % (k, v) for k, v in cookies.items()),
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read().decode("utf-8", "replace")[:400]
+
+
+def set_subscription(wid, subscribe=True):
+    """Subscribe to or unsubscribe from a Workshop item as the signed-in user."""
+    cookies = session_cookies()
+    if not cookies.get("steamLoginSecure"):
+        return {"ok": False, "error": "not_signed_in",
+                "message": "Sign in to Steam once in the Workshop tab."}
+
+    # Steam only requires that the sessionid form field matches the cookie, so
+    # if the jar has not got one yet, set one on both sides.
+    sessionid = cookies.get("sessionid")
+    if not sessionid:
+        sessionid = secrets.token_hex(12)
+        cookies["sessionid"] = sessionid
+
+    verb = "subscribe" if subscribe else "unsubscribe"
+    try:
+        status, body = _post_form(
+            "https://steamcommunity.com/sharedfiles/%s" % verb,
+            {"id": str(wid), "appid": APPID, "sessionid": sessionid},
+            cookies,
+        )
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+    # Steam answers {"success":1} on success and 8 for "not found".
+    ok = status == 200 and ('"success":1' in body.replace(" ", "")
+                            or body.strip() in ("", "null"))
+    return {"ok": ok, "status": status, "body": body, "subscribed": subscribe}

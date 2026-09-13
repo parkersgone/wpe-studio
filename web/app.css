@@ -444,12 +444,26 @@ select:focus { border-color: var(--accent); outline: none; }
 .wspager { display: flex; align-items: center; justify-content: center; gap: 14px;
   padding: 10px; border-top: 1px solid var(--line); color: var(--fg3); }
 
-/* Running inside the app window: the real Steam Workshop is a native WebView
-   layered over this tab, so the scraped fallback UI is hidden. */
-body.embedded .wsbar,
+/* "Browse the site instead": a native WebView covers this tab, so our own grid
+   and its pager would only ever flash behind it. The bar stays -- the checkbox
+   that turns the site off again lives on it. */
 body.embedded .wsnote,
 body.embedded .wspager,
 body.embedded #wsGrid { display: none; }
+
+/* Subscribe, on the tile. Always visible: hover-only was invisible to anyone
+   who did not already know it was there, and the point of this grid over the
+   embedded site is that subscribing is one obvious click. */
+.tile.ws .wsub {
+  position: absolute; right: 6px; bottom: 26px; z-index: 2;
+  padding: 4px 10px; font-size: 11px; font-weight: 600; line-height: 1;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--accent); color: #fff; cursor: pointer;
+  opacity: .82; transition: opacity .12s, transform .12s;
+}
+.tile.ws:hover .wsub { opacity: 1; transform: translateY(-1px); }
+.tile.ws .wsub[disabled] { background: var(--bg3); color: var(--fg3); cursor: default; }
+.tile.ws.subbed .wsub { background: var(--bg3); color: var(--fg2); }
 
 /* ── status bar ────────────────────────────────────────────────────── */
 .statusbar {

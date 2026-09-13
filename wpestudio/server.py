@@ -120,7 +120,37 @@ class Rotator(threading.Thread):
             break
 
 
+class LibraryWatcher(threading.Thread):
+    """Notice new Workshop downloads without being asked.
+
+    Subscribing in Steam drops a folder into the workshop directory whenever the
+    download finishes, which can be a while after you clicked Subscribe. Making
+    the user press Rescan to see it is the kind of thing that reads as "it did
+    not work". This polls the cheap directory signature and bumps a counter the
+    UI watches.
+    """
+
+    daemon = True
+
+    def __init__(self):
+        super().__init__(name="wpe-library-watcher")
+        self.version = 0
+        self.count = len(library.scan())
+
+    def run(self):
+        while True:
+            time.sleep(4)
+            try:
+                items = library.scan()
+                if len(items) != self.count:
+                    self.count = len(items)
+                    self.version += 1
+            except Exception:
+                pass
+
+
 ROTATOR = Rotator()
+WATCHER = LibraryWatcher()
 
 # Set when the tray panel should dismiss itself. It runs in its own process, so
 # this is the cheapest channel that does not need a second socket.
@@ -270,7 +300,12 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/api/library":
             return self._send(200, library.scan(force=q.get("force") == ["1"]))
         if p == "/api/status":
-            return self._send(200, engine.status())
+            st = engine.status()
+            # The UI compares these to know when to refresh the grid by itself.
+            st["library_version"] = WATCHER.version
+            st["library_count"] = WATCHER.count
+            st["steam_running"] = steamio.steam_running()
+            return self._send(200, st)
         if p == "/api/state":
             return self._send(200, state.load())
         if p.startswith("/api/wallpaper/"):
@@ -299,7 +334,9 @@ class Handler(BaseHTTPRequestHandler):
                 page=int((q.get("page") or ["1"])[0]),
             ))
         if p == "/api/steam":
-            return self._send(200, steamio.hook_status())
+            st = steamio.hook_status()
+            st["signed_in"] = steamio.signed_in()
+            return self._send(200, st)
         if p == "/api/deps":
             return self._send(200, deps.report())
         if p == "/api/translate":
@@ -438,6 +475,12 @@ class Handler(BaseHTTPRequestHandler):
                 if b.get("restart", True):
                     steamio.start_steam()
                 return self._send(200, res)
+            if action == "subscribe" or action == "unsubscribe":
+                r = steamio.set_subscription(b.get("id"), action == "subscribe")
+                r["steam_running"] = steamio.steam_running()
+                return self._send(200, r)
+            if action == "signed_in":
+                return self._send(200, {"signed_in": steamio.signed_in()})
             if action == "open_item":
                 return self._send(200, {"ok": steamio.open_item(b.get("id"))})
             if action == "open_workshop":
@@ -618,6 +661,7 @@ def serve(host=HOST, port=PORT, background=False):
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     ROTATOR.start()
+    WATCHER.start()
     if background:
         t = threading.Thread(target=httpd.serve_forever, daemon=True)
         t.start()

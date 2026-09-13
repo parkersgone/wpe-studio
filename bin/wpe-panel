@@ -14,9 +14,12 @@ Dismissal: Escape, clicking the tray icon again, or "Open full app". Explicitly
 NOT click-away -- see the note further down.
 """
 import argparse
+import atexit
 import json
 import os
+import signal
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +32,42 @@ BASE = "http://%s:%d" % (HOST, PORT)
 
 WIDTH, HEIGHT = 608, 400
 MARGIN = 8
+PIDFILE = os.path.join(paths.RUN_DIR, "panel.pid")
+
+
+def _running_panel():
+    """The pid of a live panel, or None.
+
+    A pid file rather than a handle held by the tray: a panel started any other
+    way -- by hand, by a second tray instance -- was invisible to the tray, so
+    clicking the icon opened a SECOND one and neither could close the first.
+    """
+    try:
+        with open(PIDFILE) as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            if b"wpe-panel" not in fh.read():
+                return None
+    except OSError:
+        return None
+    return pid
+
+
+def _claim_pidfile():
+    os.makedirs(paths.RUN_DIR, exist_ok=True)
+    with open(PIDFILE, "w") as fh:
+        fh.write(str(os.getpid()))
+
+
+def _release_pidfile():
+    try:
+        if _running_panel() == os.getpid():
+            os.remove(PIDFILE)
+    except OSError:
+        pass
 
 
 def token():
@@ -54,7 +93,32 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--x", type=int, default=-1, help="anchor x, screen coords")
     ap.add_argument("--y", type=int, default=-1, help="anchor y, screen coords")
+    ap.add_argument("--toggle", action="store_true",
+                    help="close the panel if one is open, otherwise open it")
     args = ap.parse_args()
+
+    existing = _running_panel()
+    if existing and existing != os.getpid():
+        # Always close the one that is actually up, whoever started it.
+        try:
+            os.kill(existing, signal.SIGTERM)
+        except OSError:
+            pass
+        try:
+            os.remove(PIDFILE)
+        except OSError:
+            pass
+        if args.toggle:
+            return 0
+        # Not a toggle: replace it rather than stacking a second window.
+        for _ in range(20):
+            if _running_panel() is None:
+                break
+            time.sleep(0.05)
+
+    _claim_pidfile()
+    atexit.register(_release_pidfile)
+    signal.signal(signal.SIGTERM, lambda *_a: sys.exit(0))
 
     import gi
     gi.require_version("Gtk", "3.0")

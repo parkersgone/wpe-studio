@@ -17,7 +17,7 @@ const App = {
   monitor: null,
   filters: { q: "", type: new Set(), source: new Set(), rating: new Set(), tags: new Set() },
   sort: "recent",
-  ws: { page: 1, sort: "trend", q: "" },
+  ws: { page: 1, sort: "trend", q: "", items: [], subbed: new Set(), signedIn: false },
   scripted: new Set(),   // wallpapers driven by their own scene script
   selecting: false,
   picked: new Set(),
@@ -70,6 +70,17 @@ async function boot() {
   document.documentElement.style.setProperty("--alpha", a.toFixed(2));
   document.documentElement.style.setProperty("--blur", a < 1 ? "18px" : "0px");
   App.monitor = App.monitor || (b.monitors[0] && b.monitors[0].name);
+
+  // Does the embedded WebView hold a signed-in Steam session? Decides whether
+  // Subscribe can POST directly or has to hand off to the site.
+  api("/api/steam").then((st) => {
+    App.ws.signedIn = !!(st && st.signed_in);
+    if ($('.view[data-view="workshop"]').classList.contains("active")) wsNote();
+  });
+  const site = !!(b.state.global || {}).workshop_site;
+  $("#wsSite").checked = site;
+  $("#wsSite").closest("label").hidden = !embedded;   // nothing to embed otherwise
+  document.body.classList.toggle("embedded", site);
 
   renderCapabilities();
   renderFilters();
@@ -131,6 +142,14 @@ function showSteam(show, url, navigate) {
   return true;
 }
 window.__wpeLeaveSteam = () => {
+  if (App.ws.peeking) {
+    App.ws.peeking = false;
+    document.body.classList.remove("embedded");
+    $('.tab[data-view="workshop"]').click();
+    if ($("#wsSite").checked) { $("#wsSite").checked = false; setSiteMode(false); }
+    loadWorkshop();
+    return;
+  }
   const t = $('.tab[data-view="installed"]');
   if (t) t.click();
 };
@@ -167,8 +186,8 @@ $("#tabs").addEventListener("click", (e) => {
   $$(".tab").forEach((t) => t.classList.toggle("active", t === b));
   $$(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === b.dataset.view));
   const workshop = b.dataset.view === "workshop";
-  showSteam(workshop);
-  if (workshop && !embedded && !$("#wsGrid").children.length) loadWorkshop();
+  showSteam(workshop && siteMode());
+  if (workshop && !siteMode() && !$("#wsGrid").children.length) loadWorkshop();
 });
 
 /* ── filters ──────────────────────────────────────────────────────── */
@@ -754,6 +773,19 @@ async function refreshStatus() {
   App.boot.state = await api("/api/state");
   // Only rebuild the grid when something it displays actually changed.
   // Rebuilding on a 6s timer was destroying tiles mid-gesture.
+  // A new subscription finished downloading: pull it in without being asked.
+  if (App.libVersion === undefined) App.libVersion = App.boot.status.library_version;
+  if (App.boot.status.library_version !== App.libVersion) {
+    const before = App.items.length;
+    App.libVersion = App.boot.status.library_version;
+    const r = await api("/api/rescan", {});
+    if (r.items) App.items = r.items;
+    renderFilters();
+    const added = App.items.length - before;
+    if (added > 0) toast(added === 1 ? "1 new wallpaper downloaded"
+                                     : added + " new wallpapers downloaded");
+  }
+
   const liveKey = [...runningIds()].sort().join(",") + "|"
     + (App.boot.state.favorites || []).join(",") + "|" + App.items.length;
   if (liveKey !== lastLiveKey) {
@@ -943,11 +975,6 @@ function renderSettings() {
 }
 
 $("#btnSteamLib").onclick = () => api("/api/steam", { action: "open_library" });
-if (embedded) {
-  // The GTK Steam view covers this whole tab, so the scraped fallback grid and
-  // its chrome would only ever be visible as a flash behind it.
-  document.body.classList.add("embedded");
-}
 $("#btnRescan").onclick = async () => {
   const r = await api("/api/rescan", {});
   App.items = r.items;
@@ -956,32 +983,138 @@ $("#btnRescan").onclick = async () => {
   toast(App.items.length + " wallpapers");
 };
 
-/* ── workshop tab ─────────────────────────────────────────────────── */
+/* ── workshop tab ─────────────────────────────────────────────────────
+ * Two ways to browse: our own grid built from Steam's search results, and the
+ * real site in the embedded WebView. The grid is the default because it looks
+ * and behaves like the rest of the app -- same tiles, same Apply -- and it can
+ * subscribe directly using the session cookie the WebView already holds. The
+ * site stays one checkbox away: it is still the only place to sign in the first
+ * time, and the only place with comments, changelogs and collections.        */
+
+function siteMode() {
+  if (!embedded) return false;           // no WebView to hand over to
+  return !!(App.boot.state.global || {}).workshop_site;
+}
+
 async function loadWorkshop() {
+  if (siteMode()) { showSteam(true); return; }
+  showSteam(false);
   $("#wsGrid").innerHTML = `<div class="muted" style="padding:20px">Loading…</div>`;
   const r = await api(`/api/workshop?q=${encodeURIComponent(App.ws.q)}&sort=${App.ws.sort}&page=${App.ws.page}`);
   $("#wsPage").textContent = App.ws.page;
+  wsNote();
   if (!r.ok) {
     $("#wsGrid").innerHTML = `<div class="muted" style="padding:20px">Workshop unreachable: ${esc(r.error)}</div>`;
     return;
   }
-  const installed = new Set(App.items.map((i) => i.id));
-  $("#wsGrid").innerHTML = r.items.map((it) => `
-    <div class="tile" data-ws="${esc(it.id)}">
-      ${it.preview ? `<img loading="lazy" src="${esc(it.preview)}" alt="">` : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
-      <div class="badges">${installed.has(it.id) ? `<span class="badge custom">installed</span>` : ""}
-        ${it.stars ? `<span class="badge">${it.stars}★</span>` : ""}</div>
-      <div class="cap">${esc(it.title)}</div>
-    </div>`).join("") || `<div class="muted" style="padding:20px">No results.</div>`;
+  App.ws.items = r.items;
+  drawWorkshop();
 }
+
+function drawWorkshop() {
+  const installed = new Set(App.items.map((i) => i.id));
+  $("#wsGrid").innerHTML = (App.ws.items || []).map((it) => {
+    const have = installed.has(it.id);
+    const sub = App.ws.subbed.has(it.id);
+    const label = sub ? "Downloading…" : "Subscribe";
+    return `
+    <div class="tile ws${have || sub ? " subbed" : ""}" data-ws="${esc(it.id)}">
+      ${it.preview ? `<img loading="lazy" src="${esc(it.preview)}" alt="">`
+                   : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
+      <div class="badges">${have ? `<span class="badge custom">installed</span>` : ""}
+        ${it.stars ? `<span class="badge">${it.stars}★</span>` : ""}</div>
+      ${have ? "" : `<button class="wsub" data-sub="${esc(it.id)}">${label}</button>`}
+      <div class="cap">${esc(it.title)}</div>
+    </div>`;
+  }).join("") || `<div class="muted" style="padding:20px">No results.</div>`;
+}
+
+/* The two things that stop a subscription turning into a wallpaper on disk:
+   not being signed in (the POST is rejected) and Steam not running (nothing is
+   there to do the download). Say which, before they click.                   */
+function wsNote() {
+  const st = App.boot.status || {};
+  const host = $("#wsnote");
+  if (!host) return;
+  const bits = [];
+  if (!App.ws.signedIn) {
+    bits.push(`Not signed in to Steam here — ${embedded
+      ? `tick <b>Browse the site instead</b> and sign in once; subscribing then works from this grid.`
+      : `subscribing opens the item in Steam instead.`}`);
+  }
+  if (!st.steam_running) {
+    bits.push("Steam is not running, so downloads will not start until you open it.");
+  }
+  host.innerHTML = bits.join(" ");
+  host.hidden = !bits.length;
+}
+
+async function subscribe(id, btn) {
+  if (!App.ws.signedIn) {
+    // No session to POST with: the site's own button is the fallback.
+    const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + id;
+    if (embedded) peekSite(url);
+    else api("/api/steam", { action: "open_item", id });
+    return;
+  }
+  btn.disabled = true; btn.textContent = "…";
+  const r = await api("/api/steam", { action: "subscribe", id });
+  if (!r.ok) {
+    btn.disabled = false; btn.textContent = "Subscribe";
+    toast("Subscribe failed: " + (r.error || r.status));
+    return;
+  }
+  App.ws.subbed.add(id);
+  btn.textContent = "Downloading…";
+  btn.closest(".tile").classList.add("subbed");
+  toast(r.steam_running
+    ? "Subscribed — it appears under Installed when Steam finishes downloading"
+    : "Subscribed — open Steam to download it");
+}
+
 $("#wsGrid").addEventListener("click", (e) => {
+  const sb = e.target.closest("[data-sub]");
+  if (sb) { e.stopPropagation(); subscribe(sb.dataset.sub, sb); return; }
   const t = e.target.closest("[data-ws]");
   if (!t) return;
-  const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + t.dataset.ws;
-  if (showSteam(true, url, true)) return;
-  api("/api/steam", { action: "open_item", id: t.dataset.ws });
+  const id = t.dataset.ws;
+  // Already downloaded? Then this tile is just another way into the library.
+  if (App.items.some((i) => i.id === id)) {
+    $('.tab[data-view="installed"]').click();
+    openDetail(id);
+    return;
+  }
+  const url = "https://steamcommunity.com/sharedfiles/filedetails/?id=" + id;
+  if (embedded) { peekSite(url); return; }
+  api("/api/steam", { action: "open_item", id });
   toast("Opened in Steam");
 });
+
+/* A look at one item page without committing to the site. The checkbox stays
+   as it was, so ✕ or Escape drops you back on the grid you were browsing --
+   the old behaviour dumped you on the Installed tab, which is not where you
+   were and not where you were going. */
+function peekSite(url) {
+  App.ws.peeking = true;
+  document.body.classList.add("embedded");
+  showSteam(true, url, true);
+}
+
+async function setSiteMode(on) {
+  App.boot.state.global = App.boot.state.global || {};
+  App.boot.state.global.workshop_site = !!on;
+  const box = $("#wsSite");
+  if (box) box.checked = !!on;
+  document.body.classList.toggle("embedded", !!on);
+  await api("/api/settings", { global: { workshop_site: !!on }, apply: false });
+}
+
+$("#wsSite").addEventListener("change", async (e) => {
+  await setSiteMode(e.target.checked);
+  if (e.target.checked) showSteam(true);
+  else { showSteam(false); loadWorkshop(); }
+});
+
 $("#wsSearch").addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   App.ws.q = e.target.value; App.ws.page = 1; loadWorkshop();
