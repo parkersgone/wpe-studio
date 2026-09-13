@@ -27,7 +27,7 @@ HOST = os.environ.get("WPE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WPE_PORT", "8014"))
 BASE = "http://%s:%d" % (HOST, PORT)
 
-WIDTH, HEIGHT = 760, 500
+WIDTH, HEIGHT = 608, 400
 MARGIN = 8
 
 
@@ -71,6 +71,15 @@ def main():
     win.set_keep_above(True)
     win.set_default_size(WIDTH, HEIGHT)
     win.set_type_hint(Gdk.WindowTypeHint.UTILITY)
+    # An RGBA visual and a transparent WebView, so the PAGE can round the
+    # corners. Without it the window is a hard rectangle and a border-radius in
+    # CSS just paints the corners the theme's grey.
+    screen0 = win.get_screen()
+    rgba = screen0.get_rgba_visual()
+    rounded = rgba is not None and screen0.is_composited()
+    if rounded:
+        win.set_visual(rgba)
+        win.set_app_paintable(True)
     win.set_accept_focus(True)
     win.set_focus_on_map(True)
 
@@ -109,9 +118,15 @@ def main():
                  print("wpe-panel: load failed %s: %s" % (uri, err.message), flush=True))
     view.connect("load-changed", lambda _v, ev:
                  print("wpe-panel: load %s" % ev.value_nick, flush=True))
-    view.set_background_color(Gdk.RGBA(0.106, 0.106, 0.106, 1.0))
+    # Transparent whenever we have an RGBA visual: the page paints its own
+    # ground, so both the rounding and the opacity setting work.
+    view.set_background_color(Gdk.RGBA(0, 0, 0, 0) if rounded
+                              else Gdk.RGBA(0.106, 0.106, 0.106, 1.0))
     tok = token()
-    view.load_uri(BASE + "/mini" + ("?t=" + tok if tok else ""))
+    query = "?t=" + tok if tok else ""
+    if rounded:
+        query += ("&" if query else "?") + "round=1"
+    view.load_uri(BASE + "/mini" + query)
     win.add(view)
 
     def close(*_a):

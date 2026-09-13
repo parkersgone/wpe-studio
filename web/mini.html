@@ -19,11 +19,24 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{
-  height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+  height:100%;overflow:hidden;background:transparent;color:var(--fg);
   font:12px/1.45 Arial,"Helvetica Neue",Helvetica,sans-serif;
   user-select:none;cursor:default;
 }
-.wrap{display:grid;grid-template-columns:1fr 200px;height:100%}
+/* The window is transparent; this paints the actual panel, so the radius here
+   is what you see. --r is 0 when there is no compositor, where a rounded page
+   on a square window would just show the theme grey in the corners. */
+.wrap{
+  display:grid;grid-template-columns:1fr 186px;height:100%;
+  /* --alpha comes from the same Window opacity setting the main app uses, so
+     the two match instead of one being see-through and the other not. */
+  background:color-mix(in srgb, var(--bg) calc(var(--alpha,1) * 100%), transparent);
+  backdrop-filter:blur(var(--blur,0px));
+  border-radius:var(--r,0);overflow:hidden;
+  border:1px solid rgba(255,255,255,.10);
+}
+.right{background:color-mix(in srgb, var(--bg2) calc(var(--alpha,1) * 100%), transparent)}
+.head{background:color-mix(in srgb, var(--bg2) calc(var(--alpha,1) * 100%), transparent)}
 
 /* ── wallpapers ─────────────────────────────────────────────────── */
 .left{display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -41,7 +54,7 @@ html,body{
 .seg button.on{background:var(--accent);color:#fff}
 .grid{
   flex:1;min-height:0;overflow-y:auto;padding:8px;display:grid;gap:6px;
-  grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
+  grid-template-columns:repeat(auto-fill,minmax(176px,1fr));
   /* Grid items stretch by default, which overrides the tile's aspect-ratio and
      turns every thumbnail into a strip. */
   grid-auto-rows:min-content;align-content:start;align-items:start;
@@ -163,6 +176,9 @@ html,body{
 
 <script>
 const $ = (s) => document.querySelector(s);
+if (new URLSearchParams(location.search).get("round") === "1") {
+  document.documentElement.style.setProperty("--r", "12px");
+}
 const T = new URLSearchParams(location.search).get("t") || "";
 const url = (p) => T ? p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(T) : p;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -327,6 +343,9 @@ addEventListener("keydown", (e) => { if (e.key === "Escape") api("/api/close-min
 (async () => {
   const b = await api("/api/bootstrap");
   items = b.library; state = b.state; status = b.status;
+  const a = (state.global.opacity ?? 100) / 100;
+  document.documentElement.style.setProperty("--alpha", a.toFixed(2));
+  document.documentElement.style.setProperty("--blur", a < 1 ? "18px" : "0px");
   bind("#fps", "fps", "num");
   bind("#vol", "volume", "num");
   bind("#mute", "mute", "bool");

@@ -90,6 +90,41 @@ const HOST = window.webkit && window.webkit.messageHandlers && window.webkit.mes
 const hostSend = (msg) => { try { HOST.postMessage(JSON.stringify(msg)); } catch { } };
 const embedded = !!HOST;
 
+// ── window controls ────────────────────────────────────────────────
+// The window is undecorated so the page can round its corners, which means the
+// page owns minimise / maximise / close, dragging and resizing.
+const winOp = (op, e) => hostSend({
+  action: "win", op,
+  x: e ? Math.round(e.screenX) : 0,
+  y: e ? Math.round(e.screenY) : 0,
+});
+
+if (embedded) {
+  $("#wcMin").onclick = () => winOp("minimize");
+  $("#wcMax").onclick = () => winOp("maximize");
+  $("#wcClose").onclick = () => winOp("close");
+  $("#grip").addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    winOp("resize", e);
+  });
+  $(".titlebar").addEventListener("mousedown", (e) => {
+    // Buttons and the tab strip are for clicking, not dragging.
+    if (e.button !== 0 || e.target.closest("button, .tab, input, select")) return;
+    winOp("drag", e);
+  });
+  $(".titlebar").addEventListener("dblclick", (e) => {
+    if (e.target.closest("button, .tab, input, select")) return;
+    winOp("maximize");
+  });
+} else {
+  // In a browser tab there is no window to control.
+  const wc = document.querySelector(".wincontrols");
+  if (wc) wc.hidden = true;
+  const g = $("#grip");
+  if (g) g.hidden = true;
+  document.documentElement.style.setProperty("--radius-win", "0px");
+}
+
 function showSteam(show, url, navigate) {
   if (!embedded) return false;
   hostSend({ action: "steam", show, url, navigate });

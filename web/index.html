@@ -8,6 +8,11 @@
 </head>
 <body data-skin="dark">
 
+<!-- Everything lives in .shell. body cannot paint the rounded background
+     itself: with no background on html, the BODY background is propagated to
+     the canvas and painted across the whole viewport, which ignores body's
+     border-radius and gives square corners. -->
+<div class="shell">
 <header class="titlebar">
   <img class="logo" src="/wpe-asset/images/wp_logo.png" alt="">
   <span class="appname">Wallpaper Engine <em id="verline">— Linux Edition</em></span>
@@ -20,6 +25,11 @@
   <div class="titleactions">
     <button class="ghost" id="btnSteamLib" title="Open the Steam library"><i class="fab">&#xf1b6;</i></button>
     <button class="ghost" id="btnRescan" title="Rescan the library"><i class="fa">&#xf2f1;</i></button>
+    <div class="wincontrols">
+      <button class="wc" id="wcMin" title="Minimise">&#xf2d1;</button>
+      <button class="wc" id="wcMax" title="Maximise">&#xf2d0;</button>
+      <button class="wc close" id="wcClose" title="Close">&#xf00d;</button>
+    </div>
   </div>
 </header>
 
@@ -277,6 +287,9 @@
   </div>
 </div>
 
+</div><!-- /.shell -->
+
+<div class="grip" id="grip" title="Resize"></div>
 <div class="toast" id="toast"></div>
 <script src="/app.js"></script>
 </body>

@@ -24,6 +24,10 @@
 }
 
 :root {
+  /* Rounded because the window is undecorated. Set here rather than from JS:
+     if anything in the startup script throws, the corners should still be
+     right. app.js zeroes it when running in a plain browser tab. */
+  --radius-win: 12px;
   --alpha: 1;
   --bg: #222;
   --bg2: #1b1b1b;
@@ -65,10 +69,18 @@ body[data-skin="white"] { --bg:#f3f3f3; --bg2:#e9e9e9; --bg3:#fff; --bg4:#e2e2e2
 
 * { box-sizing: border-box; }
 
-html, body {
+html {
+  height: 100%;
+  /* Transparent, so body's rounded corners actually show the desktop rather
+     than the theme's grey. The window is undecorated and takes an RGBA visual. */
+  background: transparent;
+}
+body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+  border-radius: var(--radius-win, 0);
+  border: 1px solid rgba(255, 255, 255, .09);
   /* --alpha is set from the opacity setting. The window is created with an
      RGBA visual and a transparent WebView, so whatever the page does not paint
      shows the desktop through -- which is the point. Panels stay opaque enough
@@ -80,6 +92,16 @@ html, body {
   cursor: default;
 }
 
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-win, 0);
+  border: 1px solid rgba(255, 255, 255, .09);
+  background: color-mix(in srgb, var(--bg) calc(var(--alpha, 1) * 100%), transparent);
+}
+
 .fa { font-family: "WPE Icons"; font-weight: 900; font-style: normal; line-height: 1; }
 .fab { font-family: "WPE Icons Brand"; font-weight: 400; font-style: normal; line-height: 1; }
 
@@ -87,6 +109,9 @@ html, body {
 .titlebar {
   height: var(--titlebar);
   backdrop-filter: blur(var(--blur, 0px));
+  border-radius: var(--radius-win, 0) var(--radius-win, 0) 0 0;
+  /* The whole bar drags the window, except the things you click. */
+  -webkit-app-region: drag;
   display: flex; align-items: center; gap: 10px;
   padding: 0 10px;
   background: var(--bg2);
@@ -103,7 +128,30 @@ html, body {
 }
 .tab:hover { color: var(--fg); background: rgba(255,255,255,.04); }
 .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
-.titleactions { margin-left: auto; display: flex; gap: 8px; padding-right: 4px; }
+.titleactions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* ── window controls, since the window is undecorated ──────────────── */
+.wincontrols { display: flex; gap: 2px; margin-left: 6px; }
+.wc {
+  font-family: "WPE Icons"; font-weight: 900; font-size: 11px;
+  background: none; border: 0; color: var(--fg3); cursor: pointer;
+  width: 34px; height: calc(var(--titlebar) - 1px);
+}
+.wc:hover { color: var(--fg); background: rgba(255,255,255,.09); }
+.wc.close:hover { background: var(--danger); color: #fff; }
+.wc:last-child { border-top-right-radius: var(--radius-win, 0); }
+
+/* Bottom-right resize grip; an undecorated window has no frame to drag. */
+.grip {
+  position: fixed; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; z-index: 40;
+  background:
+    linear-gradient(135deg, transparent 55%, var(--fg3) 55%, var(--fg3) 62%,
+                    transparent 62%, transparent 74%, var(--fg3) 74%,
+                    var(--fg3) 81%, transparent 81%);
+  opacity: .5;
+}
+.grip:hover { opacity: 1; }
 .ghost {
   background: none; border: 1px solid transparent; color: var(--fg3);
   cursor: pointer; width: 30px; height: 26px; border-radius: var(--radius);
@@ -113,7 +161,7 @@ html, body {
 
 /* ── views ─────────────────────────────────────────────────────────── */
 #main {
-  height: calc(100% - var(--titlebar) - var(--statusbar));
+  flex: 1;
   min-height: 0; position: relative; overflow: hidden;
 }
 .view { display: none; height: 100%; }
@@ -406,7 +454,8 @@ body.embedded #wsGrid { display: none; }
 /* ── status bar ────────────────────────────────────────────────────── */
 .statusbar {
   height: var(--statusbar); flex: none;
-  backdrop-filter: blur(var(--blur, 0px)); display: flex; align-items: center; gap: 12px;
+  backdrop-filter: blur(var(--blur, 0px));
+  border-radius: 0 0 var(--radius-win, 0) var(--radius-win, 0); display: flex; align-items: center; gap: 12px;
   padding: 0 12px; background: var(--bg2); border-top: 1px solid var(--line);
 }
 .monitors { display: flex; gap: 6px; }

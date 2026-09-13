@@ -94,6 +94,11 @@ def open_window(url):
         return 0
 
     win = Gtk.Window(title="Wallpaper Engine")
+    # Undecorated so the page can round its own corners -- a border-radius
+    # inside a WM-decorated frame just paints the theme's grey into them. The
+    # page draws the title bar, which it already had, and gains the window
+    # buttons plus drag and resize through the bridge below.
+    win.set_decorated(False)
     # Size to the screen rather than a fixed 1280x860, which is a pinch too big
     # once the Cinnamon panel and window decorations are accounted for.
     try:
@@ -216,6 +221,29 @@ def open_window(url):
         except Exception as exc:
             sys.stderr.write("wpe-studio: bad bridge message: %r\n" % (exc,))
             return
+        if payload.get("action") == "win":
+            op = payload.get("op")
+            if op == "minimize":
+                win.iconify()
+            elif op == "maximize":
+                if win.is_maximized():
+                    win.unmaximize()
+                else:
+                    win.maximize()
+            elif op == "close":
+                Gtk.main_quit()
+            elif op == "drag":
+                win.begin_move_drag(1, int(payload.get("x", 0)),
+                                    int(payload.get("y", 0)),
+                                    Gtk.get_current_event_time())
+            elif op == "resize":
+                # South-east only; that is the grip the page draws.
+                win.begin_resize_drag(Gdk.WindowEdge.SOUTH_EAST, 1,
+                                      int(payload.get("x", 0)),
+                                      int(payload.get("y", 0)),
+                                      Gtk.get_current_event_time())
+            return
+
         if payload.get("action") == "steam":
             if payload.get("show"):
                 target = payload.get("url") or STEAM_HOME
