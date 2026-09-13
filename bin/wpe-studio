@@ -167,6 +167,12 @@ def open_window(url):
                              min(800, max(600, geo.height - 180)))
     except Exception:
         win.set_default_size(1180, 800)
+    # A hard floor. The window is undecorated, so GTK sizes it from the
+    # WebView's natural size -- and a page whose panes are all min-height:0 /
+    # overflow:hidden reports a natural size of almost nothing. Switching to a
+    # tab laid out that way made the whole window collapse to a few hundred
+    # pixels, which is not a thing the user did or can easily undo.
+    win.set_size_request(820, 520)
     win.set_position(Gtk.WindowPosition.CENTER)
     try:
         win.set_icon_from_file(os.path.join(paths.WPE_UI, "images/wp_logo.png"))

@@ -455,6 +455,16 @@ body.embedded .wsbody { display: none; }
    by, the results, and what you are looking at. */
 .wsbody { flex: 1; display: grid; grid-template-columns: 186px 1fr 300px;
   min-height: 0; overflow: hidden; }
+/* Narrow windows: drop the detail pane, then the filter rail, rather than
+   squeezing three columns into nothing. */
+@media (max-width: 1000px) {
+  .wsbody { grid-template-columns: 186px 1fr; }
+  .wsdetail { display: none; }
+}
+@media (max-width: 720px) {
+  .wsbody { grid-template-columns: 1fr; }
+  .wsfilters { display: none; }
+}
 .wsmain { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 .wsmain #wsGrid { flex: 1; overflow: auto; }
 

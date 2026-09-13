@@ -1090,6 +1090,13 @@ async function loadWorkshop() {
   drawWorkshop();
 }
 
+// Subscribed but not on disk yet: say which of the two states it is in, rather
+// than claiming a download is happening when the queue is idle.
+function subLabel() {
+  const j = (App.boot.status || {}).downloads;
+  return j && j.running ? "Downloading…" : "In download queue";
+}
+
 function drawWorkshop() {
   const installed = new Set(App.items.map((i) => i.id));
   $("#wsGrid").innerHTML = (App.ws.items || []).map((it) => {
@@ -1103,7 +1110,7 @@ function drawWorkshop() {
       <div class="badges">${have ? `<span class="badge custom">installed</span>`
                     : sub ? `<span class="badge">queued</span>` : ""}</div>
       ${have ? "" : `<button class="wsub" data-sub="${esc(it.id)}">${
-                       sub ? "Downloading…" : "Subscribe"}</button>`}
+                       sub ? subLabel() : "Subscribe"}</button>`}
       <div class="cap">${esc(it.title)}</div>
     </div>`;
   }).join("") || `<div class="muted" style="padding:20px">No results.</div>`;
@@ -1145,7 +1152,7 @@ async function openWsDetail(id) {
         ? `<button class="btn primary" id="wdApply">Apply</button>
            <button class="btn subtle" id="wdOpen">Show in my library</button>`
         : `<button class="btn primary" id="wdSub"${sub ? " disabled" : ""}>${
-             sub ? "Downloading…" : "Subscribe"}</button>`}
+             sub ? subLabel() : "Subscribe"}</button>`}
       <button class="btn subtle" id="wdSite">Open on Steam</button>
     </div>
     ${d.description ? `<div class="desc">${esc(d.description)}</div>` : ""}`;
@@ -1238,7 +1245,7 @@ async function subscribe(id, btn) {
     return;
   }
   App.ws.subbed.add(id);
-  btn.textContent = "Downloading…";
+  btn.textContent = subLabel();
   const tile = btn.closest(".tile");
   if (tile) tile.classList.add("subbed");
   toast(r.queued
