@@ -27,7 +27,7 @@ HOST = os.environ.get("WPE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WPE_PORT", "8014"))
 BASE = "http://%s:%d" % (HOST, PORT)
 
-WIDTH, HEIGHT = 620, 430
+WIDTH, HEIGHT = 760, 500
 MARGIN = 8
 
 

@@ -23,7 +23,7 @@ html,body{
   font:12px/1.45 Arial,"Helvetica Neue",Helvetica,sans-serif;
   user-select:none;cursor:default;
 }
-.wrap{display:grid;grid-template-columns:1fr 186px;height:100%}
+.wrap{display:grid;grid-template-columns:1fr 200px;height:100%}
 
 /* ── wallpapers ─────────────────────────────────────────────────── */
 .left{display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -41,7 +41,7 @@ html,body{
 .seg button.on{background:var(--accent);color:#fff}
 .grid{
   flex:1;min-height:0;overflow-y:auto;padding:8px;display:grid;gap:6px;
-  grid-template-columns:repeat(auto-fill,minmax(104px,1fr));
+  grid-template-columns:repeat(auto-fill,minmax(220px,1fr));
   /* Grid items stretch by default, which overrides the tile's aspect-ratio and
      turns every thumbnail into a strip. */
   grid-auto-rows:min-content;align-content:start;align-items:start;
@@ -55,11 +55,11 @@ html,body{
 .tile:hover{border-color:var(--line)}
 .tile.live{border-color:var(--orange)}
 .tile .cap{
-  position:absolute;left:0;right:0;bottom:0;padding:10px 5px 3px;font-size:10px;
+  position:absolute;left:0;right:0;bottom:0;padding:18px 8px 6px;font-size:11.5px;
   background:linear-gradient(transparent,rgba(0,0,0,.85));
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.tile .star{position:absolute;top:3px;right:4px;font-size:10px;color:var(--orange)}
+.tile .star{position:absolute;top:5px;right:6px;font-size:13px;color:var(--orange)}
 
 /* ── settings column ────────────────────────────────────────────── */
 .right{
@@ -72,6 +72,10 @@ html,body{
 .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--fg3);margin-right:5px}
 .dot.on{background:var(--orange)}
 .opts{flex:1;overflow-y:auto;padding:8px 10px}
+.quick{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:10px}
+.quick .btn{padding:7px 0;font-size:14px;line-height:1}
+.quick .btn.on{background:var(--orange);border-color:var(--orange);color:#111}
+.tog.big{padding:7px 0;font-size:12.5px;color:var(--fg)}
 .opt{margin-bottom:9px}
 .opt label{display:block;color:var(--fg2);font-size:10.5px;margin-bottom:3px}
 .opt .row{display:flex;align-items:center;gap:6px}
@@ -131,27 +135,30 @@ html,body{
       <div class="s" id="nowSub"><span class="dot"></span>idle</div>
     </div>
     <div class="opts">
-      <div class="opt"><label>Frame rate <output id="oFps"></output></label>
-        <div class="row"><input type="range" id="fps" min="5" max="144" step="1"></div></div>
+      <!-- Ordered by how often you actually touch it from a tray icon. The
+           set-once options -- parallax, scaling, pause-on-fullscreen -- live in
+           the full app, not here. -->
+      <div class="quick">
+        <button class="btn" id="fav" title="Favourite the wallpaper that is running">☆</button>
+        <button class="btn" id="shuffle" title="Apply a random wallpaper">⇄</button>
+        <button class="btn" id="again" title="Re-apply the current wallpaper">⟳</button>
+      </div>
+
+      <div class="tog big"><span>Mute</span>
+        <label class="switch"><input type="checkbox" id="mute"><span></span></label></div>
       <div class="opt"><label>Volume <output id="oVol"></output></label>
         <div class="row"><input type="range" id="vol" min="0" max="100" step="1"></div></div>
-      <div class="tog"><span>Mute</span>
-        <label class="switch"><input type="checkbox" id="mute"><span></span></label></div>
-      <div class="tog"><span>Pause fullscreen</span>
-        <label class="switch"><input type="checkbox" id="pause"><span></span></label></div>
-      <div class="tog"><span>Parallax</span>
-        <label class="switch"><input type="checkbox" id="parallax"><span></span></label></div>
-      <div class="opt"><label>Scaling</label>
-        <select id="scaling">
-          <option>default</option><option>stretch</option><option>fit</option><option>fill</option>
-        </select></div>
+      <div class="opt"><label>Frame rate <output id="oFps"></output></label>
+        <div class="row"><input type="range" id="fps" min="5" max="144" step="1"></div></div>
+
+      <div class="opt"><label>Playlist</label>
+        <select id="playlist"><option value="">Not running</option></select></div>
     </div>
     <div class="foot">
       <button class="btn danger" id="stop">Stop</button>
       <button class="btn primary" id="open">Open full app</button>
     </div>
   </div>
-</div>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -199,6 +206,22 @@ function render() {
   $("#nowSub").innerHTML = cur
     ? `<span class="dot on"></span>${state.global.fps} fps · ${state.global.mute ? "muted" : state.global.volume + "%"}`
     : `<span class="dot"></span>idle`;
+
+  const id = cur ? String(cur.id) : null;
+  $("#fav").classList.toggle("on", !!id && favs.has(id));
+  $("#fav").textContent = id && favs.has(id) ? "★" : "☆";
+  $("#fav").disabled = !id;
+  $("#again").disabled = !id;
+
+  const pls = Object.keys(state.playlists || {});
+  const sel = $("#playlist");
+  const want = state.active_playlist || "";
+  if (sel.dataset.built !== pls.join("|")) {
+    sel.dataset.built = pls.join("|");
+    sel.innerHTML = `<option value="">Off</option>`
+      + pls.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  }
+  sel.value = want;
 }
 
 function bind(id, key, kind) {
@@ -231,7 +254,47 @@ $("#filt").addEventListener("click", (e) => {
   filter = b.dataset.f;
   render();
 });
+function currentId() {
+  const m = (status?.monitors || []).find((x) => x.running);
+  return m ? String(m.id) : null;
+}
+
 $("#stop").onclick = async () => { await api("/api/stop", {}); status = await api("/api/status"); render(); };
+
+$("#fav").onclick = async () => {
+  const id = currentId();
+  if (!id) return;
+  const r = await api("/api/favorite", { id });
+  state.favorites = r.favorites;
+  render();
+};
+
+$("#shuffle").onclick = async () => {
+  // Anything that will actually render: skip the ones recorded as failing.
+  const bad = state.incompatible || {};
+  const pool = items.filter((it) => !bad[it.id] && it.type !== "unknown");
+  if (!pool.length) return;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  await api("/api/apply", { id: pick.id });
+  status = await api("/api/status");
+  render();
+};
+
+$("#again").onclick = async () => {
+  const id = currentId();
+  if (!id) return;
+  await api("/api/apply", { id });
+  status = await api("/api/status");
+  render();
+};
+
+$("#playlist").onchange = async (e) => {
+  const name = e.target.value;
+  const r = await api("/api/playlist",
+                      name ? { action: "activate", name } : { action: "deactivate" });
+  state.active_playlist = r.active;
+  render();
+};
 $("#open").onclick = () => api("/api/open-app", {});
 addEventListener("keydown", (e) => { if (e.key === "Escape") api("/api/close-mini", {}); });
 
@@ -241,9 +304,6 @@ addEventListener("keydown", (e) => { if (e.key === "Escape") api("/api/close-min
   bind("#fps", "fps", "num");
   bind("#vol", "volume", "num");
   bind("#mute", "mute", "bool");
-  bind("#pause", "pause_on_fullscreen", "bool");
-  bind("#parallax", "parallax", "bool");
-  bind("#scaling", "scaling");
   render();
   setInterval(async () => { status = await api("/api/status"); render(); }, 5000);
 })();
