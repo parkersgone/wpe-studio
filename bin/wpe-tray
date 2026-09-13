@@ -128,11 +128,39 @@ def open_ui(_w=None, tab=""):
                      stdin=subprocess.DEVNULL, start_new_session=True)
 
 
+_panel = {"proc": None}
+
+
+def panel_alive():
+    p = _panel["proc"]
+    return p is not None and p.poll() is None
+
+
+def toggle_panel(*_a):
+    """Clicking the tray icon opens the panel, clicking it again closes it.
+
+    Tracked by process handle rather than by focus. Focus-based dismissal alone
+    is not enough: the panel does not always take focus when opened from the
+    tray, and then nothing ever closes it -- it just sat there permanently.
+    """
+    if panel_alive():
+        try:
+            _panel["proc"].terminate()
+        except OSError:
+            pass
+        _panel["proc"] = None
+        return
+
+    _panel["proc"] = subprocess.Popen(
+        [os.path.join(paths.BIN_DIR, "wpe-panel")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, start_new_session=True)
+
+
+# Kept for the menu entry, which should always open rather than toggle.
 def open_panel(*_a):
-    """The mini panel, as its own process -- see bin/wpe-panel for why."""
-    subprocess.Popen([os.path.join(paths.BIN_DIR, "wpe-panel")],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     stdin=subprocess.DEVNULL, start_new_session=True)
+    if not panel_alive():
+        toggle_panel()
 
 
 def panel_mode():
@@ -148,10 +176,10 @@ def main():
     install_icon()
     ensure_server()
 
-    def build_menu():
+    def build_menu(force_full=False):
         menu = Gtk.Menu()
 
-        if panel_mode():
+        if panel_mode() and not force_full:
             # AppIndicator gives no click-activate signal, so "open the panel"
             # has to be a menu entry. Keep it to one so it is effectively a
             # button rather than the grey list this replaces.
@@ -159,7 +187,7 @@ def main():
             mi.connect("activate", open_panel)
             menu.append(mi)
             menu.append(Gtk.SeparatorMenuItem())
-            quit_item = Gtk.MenuItem(label="Quit tray")
+            quit_item = Gtk.MenuItem(label="Hide tray icon until next login")
             quit_item.connect("activate", lambda _w: Gtk.main_quit())
             menu.append(quit_item)
             menu.show_all()
@@ -203,7 +231,7 @@ def main():
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True))
         menu.append(Gtk.SeparatorMenuItem())
-        item("Quit tray", lambda _w: Gtk.main_quit())
+        item("Hide tray icon until next login", lambda _w: Gtk.main_quit())
 
         menu.show_all()
         return menu
@@ -211,42 +239,47 @@ def main():
     icon = icon_name()
     attached = None
 
-    # 1. AppIndicator with an ABSOLUTE PNG PATH. This is the combination that
-    # actually renders on this panel. Every theme-name variant was accepted by
-    # the API and then painted nothing -- including names GTK's own
-    # IconTheme.lookup_icon resolved correctly, which makes it very easy to
-    # convince yourself it should be working.
+    # 1. XApp.StatusIcon, with an absolute PNG path.
+    #
+    # Preferred because it is the only one of the three that reports a plain
+    # left CLICK -- AppIndicator can only pop a menu, and a menu is exactly what
+    # the panel is meant to replace. It took a while to get an icon out of it:
+    # a theme name renders nothing, and so does a small symbolic PNG. The file
+    # that works is the same one AppIndicator wants, a normal-sized PNG given by
+    # absolute path.
     try:
-        gi.require_version("AyatanaAppIndicator3", "0.1")
-        from gi.repository import AyatanaAppIndicator3 as AppIndicator
-        ind = AppIndicator.Indicator.new(
-            "wpe-studio", icon_path(), AppIndicator.IndicatorCategory.APPLICATION_STATUS)
-        ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        ind.set_title("Wallpaper Engine")
-        ind.set_menu(build_menu())
-        GLib.timeout_add_seconds(20, lambda: (ind.set_menu(build_menu()), True)[1])
-        attached = "AyatanaAppIndicator3"
-        globals()["_keepalive"] = ind
+        gi.require_version("XApp", "1.0")
+        from gi.repository import XApp
+        si = XApp.StatusIcon()
+        si.set_icon_name(icon_path())
+        si.set_tooltip_text("Wallpaper Engine")
+        si.connect("activate",
+                   lambda *_a: toggle_panel() if panel_mode() else open_ui())
+        # Right click still gets the full menu.
+        si.set_secondary_menu(build_menu(force_full=True))
+        GLib.timeout_add_seconds(
+            20, lambda: (si.set_secondary_menu(build_menu(force_full=True)), True)[1])
+        attached = "XApp.StatusIcon"
+        globals()["_keepalive"] = si
     except Exception as e:
-        sys.stderr.write("wpe-tray: appindicator unavailable (%s)\n" % e)
+        sys.stderr.write("wpe-tray: xapp unavailable (%s)\n" % e)
 
-    # 2. XApp.StatusIcon -- native on Cinnamon and XFCE, wants a theme name.
+    # 2. AppIndicator. No click signal, so panel mode has to ride on the menu.
     if attached is None:
         try:
-            gi.require_version("XApp", "1.0")
-            from gi.repository import XApp
-            si = XApp.StatusIcon()
-            si.set_icon_name(icon)
-            si.set_tooltip_text("Wallpaper Engine")
-            si.set_primary_menu(build_menu())
-            si.connect("activate",
-                       lambda *_a: open_panel() if panel_mode() else open_ui())
-            GLib.timeout_add_seconds(
-                20, lambda: (si.set_primary_menu(build_menu()), True)[1])
-            attached = "XApp.StatusIcon"
-            globals()["_keepalive"] = si
+            gi.require_version("AyatanaAppIndicator3", "0.1")
+            from gi.repository import AyatanaAppIndicator3 as AppIndicator
+            ind = AppIndicator.Indicator.new(
+                "wpe-studio", icon_path(),
+                AppIndicator.IndicatorCategory.APPLICATION_STATUS)
+            ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+            ind.set_title("Wallpaper Engine")
+            ind.set_menu(build_menu())
+            GLib.timeout_add_seconds(20, lambda: (ind.set_menu(build_menu()), True)[1])
+            attached = "AyatanaAppIndicator3"
+            globals()["_keepalive"] = ind
         except Exception as e:
-            sys.stderr.write("wpe-tray: xapp unavailable (%s)\n" % e)
+            sys.stderr.write("wpe-tray: appindicator unavailable (%s)\n" % e)
 
     # 3. The deprecated one, because some panels still have nothing else.
     if attached is None:
@@ -260,7 +293,7 @@ def main():
             si.set_from_icon_name(icon)
         si.set_tooltip_text("Wallpaper Engine")
         si.connect("activate",
-                   lambda *_a: open_panel() if panel_mode() else open_ui())
+                   lambda *_a: toggle_panel() if panel_mode() else open_ui())
         si.connect("popup-menu", lambda _i, button, time:
                    build_menu().popup(None, None, None, None, button, time))
         attached = "Gtk.StatusIcon"
