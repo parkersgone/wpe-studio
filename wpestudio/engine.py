@@ -25,7 +25,7 @@ import signal
 import subprocess
 import time
 
-from . import library, paths, state
+from . import desktop, library, paths, state
 
 PROC_NAME = "linux-wallpaper"   # /proc/<pid>/comm is capped at 15 chars
 SCALINGS = ("default", "stretch", "fit", "fill")
@@ -330,16 +330,11 @@ def demote(win):
 
 
 def desktop_icons_on():
-    try:
-        r = _run(["gsettings", "get", "org.nemo.desktop", "show-desktop-icons"])
-        return r.stdout.strip() == "true"
-    except Exception:
-        return False
+    return desktop.icons_on()
 
 
 def set_desktop_icons(on):
-    _run(["gsettings", "set", "org.nemo.desktop", "show-desktop-icons",
-          "true" if on else "false"])
+    return desktop.set_icons(on)
 
 
 # --- apply ------------------------------------------------------------------
@@ -443,6 +438,7 @@ def status():
         "engine": paths.ENGINE,
         "engine_present": os.path.exists(paths.ENGINE),
         "desktop_icons": desktop_icons_on(),
+        "capabilities": desktop.capabilities(),
         "workshop": paths.WORKSHOP,
         "workshop_present": os.path.isdir(paths.WORKSHOP),
     }
@@ -512,7 +508,33 @@ def screenshot(wid, out_path, delay=90):
             except Exception:
                 pass
 
-    return os.path.exists(out_path) and os.path.getsize(out_path) > 0
+    if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
+        return False
+
+    # A file on disk is not a captured frame. --screenshot happily writes a
+    # fully black PNG for wallpaper types it cannot grab, and treating that as
+    # success puts a black lock screen up and reports that it worked.
+    if _is_blank(out_path):
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _is_blank(path):
+    """True if the image has essentially no variation (a solid fill)."""
+    r = subprocess.run(
+        ["convert", path, "-resize", "64x64!", "-format",
+         "%[standard-deviation] %[mean]", "info:"],
+        capture_output=True, text=True)
+    try:
+        stddev, mean = (float(x) for x in r.stdout.split())
+    except Exception:
+        return False   # cannot tell -> do not claim it is blank
+    # 8-bit values are scaled to 0-65535 by ImageMagick's %[..] here.
+    return stddev < 400 and mean < 2000
 
 
 def restore():

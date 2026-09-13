@@ -15,6 +15,32 @@ wpe-apply --set <id> k=v  change a setting and re-apply if it is on screen
 The UI is also a plain web app on `http://127.0.0.1:8014`, so it works from a
 browser and can be put behind the remote dashboard.
 
+## What it runs on
+
+Built and used on **Linux Mint 22 / Cinnamon / X11**. It is not tied to Mint,
+but it is tied to X11, and the desktop-integration parts differ per desktop:
+
+| | Cinnamon | GNOME / Budgie | MATE | Xfce | KDE |
+|---|---|---|---|---|---|
+| render the wallpaper | yes | yes | yes | yes | yes |
+| lock screen background | yes | likely | yes | yes | no |
+| desktop-icons toggle | yes | yes | yes | manual | manual |
+| idle timeout / lock settings | yes | manual | manual | manual | manual |
+
+Rendering is X11-only. The whole approach is "take an ordinary window and demote
+it to the desktop layer", driven through `xrandr`, `wmctrl` and `xprop`.
+**On Wayland nothing will appear** — `linux-wallpaperengine` itself supports
+`wlr-layer-shell`, but this wrapper does not drive it yet.
+
+Everything environment-specific lives in `wpestudio/desktop.py`, and anything
+unsupported is reported in the UI rather than silently doing nothing. Adding a
+desktop is usually a row in the table there.
+
+Requirements: `linux-wallpaperengine`, Python 3.10+, `xrandr`/`wmctrl`/`xprop`/
+`xdotool`, ImageMagick (for the lock screen still), and Wallpaper Engine owned
+on Steam. GTK3 + WebKit2GTK for the app window; without them it opens in your
+browser instead.
+
 ## Why it exists
 
 Wallpaper Engine's own UI is a Windows app. Under Proton it launches, browses
@@ -75,7 +101,7 @@ files next to itself in `cef/*/Release/`, and the CEF distribution puts them
 in `Resources/`. Without them CEF blocks forever with no error — every `web`
 wallpaper appeared to start and then hang. `Release/` now symlinks them.
 
-**3. Web wallpapers: the crash is fixed, the render is not.** Inside CEF:
+**3. Web wallpapers: three bugs deep.** First, inside CEF:
 
     ImmediateCrash() at base/immediate_crash.h:186
     close() at base/files/scoped_file_linux.cc:110
@@ -97,9 +123,27 @@ wallpaper startup and fed Chromium's switches to the wallpaper argument parser.
 `WPE_CEF_SCHEMES` (the parent publishes them before `CefInitialize`, since a
 child cannot rebuild the list without the loaded backgrounds).
 
-The whole CEF process tree now starts cleanly — browser, GPU, renderer, zygote
-— with no errors. **The output is still a black frame.** Scene and video are
-unaffected; the 8 web wallpapers stay marked Unsupported in the UI.
+With the process tree finally starting cleanly, `OnPaint` was firing at the
+right size every frame — and the screen was still black. Two reasons, both in
+`RenderHandler`:
+
+* it bound `getWallpaperFramebuffer()` with `glBindTexture`. GL names live in
+  separate namespaces per object type, so the framebuffer's id is not the
+  texture's id; CEF's pixels were being uploaded into an unrelated texture.
+  `getWallpaperTexture()` already existed.
+* `CWeb::renderFrame` binds the scene FBO *before* pumping CEF's message loop,
+  so `OnPaint` ran with the destination texture attached to the bound
+  framebuffer. Writing to an attachment of the active framebuffer is a feedback
+  loop and the upload is discarded. It now detaches for the upload and restores
+  the binding, and uses `glTexSubImage2D` unless the size changed rather than
+  reallocating the FBO's colour attachment every frame.
+
+Web wallpapers render. Set `WPE_CEF_DEBUG=1` to log `OnPaint` and the registered
+custom schemes.
+
+Two scene wallpapers still fail, in the engine's own scene loader
+("Projection must have a width", an nlohmann `type_error`). Those are marked
+Unsupported in the UI, with the recorded error on the tile.
 
 ## Lock screen
 
@@ -162,6 +206,16 @@ refuses to pretend otherwise. The file is backed up to
 rather than a parse-and-regenerate of the whole client config, and it is
 rejected if the brace balance changes.
 
+## The HTTP API
+
+On loopback there is no auth, because anything that can reach it can already run
+`wpe-apply`. Bind it anywhere else (`WPE_BIND`) and a token is generated into
+`~/.config/wpe-studio/api-token` and required on every request, as
+`Authorization: Bearer <token>` or `?t=<token>`; the server prints a ready-made
+URL on startup and the page carries the token through its own calls. That is not
+a substitute for putting it behind Tailscale, but it is the difference between
+one step and none.
+
 ## Layout
 
 ```
@@ -171,6 +225,8 @@ wpestudio/library.py   scanning, project.json, property schemas, presets
 wpestudio/engine.py    argv, process control, the window demotion
 wpestudio/steamio.py   Workshop browse, launch-option hook
 wpestudio/lockscreen.py  cinnamon-screensaver background, greeter still
+wpestudio/lockscreen.py  lock screen background, greeter still
+wpestudio/desktop.py     desktop/session detection, per-DE integration
 wpestudio/server.py    stdlib HTTP, JSON API, static files
 web/                   the UI
 bin/                   wpe-studio, wpe-apply

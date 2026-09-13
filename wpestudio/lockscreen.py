@@ -24,7 +24,7 @@ import os
 import re
 import subprocess
 
-from . import engine, library, paths, state
+from . import desktop, engine, library, paths, state
 
 STILL_DIR = os.path.expanduser("~/.local/share/wpe-studio")
 
@@ -69,13 +69,14 @@ def status():
     return {
         "screensaver": ss,
         "still": newest_still(),
-        "current_background": _gs_get("org.cinnamon.desktop.background", "picture-uri"),
+        "current_background": desktop.get_background(),
+        "capabilities": desktop.capabilities(),
         "idle_delay_min": int(_gs_get("org.cinnamon.desktop.session",
                                       "idle-delay").split()[-1] or 0) // 60,
         "lock_enabled": _gs_get("org.cinnamon.desktop.screensaver",
                                 "lock-enabled") == "true",
         "login_installed": os.path.exists(GREETER_CONF),
-        "provider": "cinnamon-screensaver",
+        "provider": desktop.lockscreen_provider(),
     }
 
 
@@ -93,8 +94,7 @@ def enable(wallpaper_id=None, timeout_min=None, lock=None, login_background=None
             ss["login_background"] = bool(login_background)
         ss["enabled"] = True
         # Remember what the background was, once, so disable() can put it back.
-        ss.setdefault("previous_background",
-                      _gs_get("org.cinnamon.desktop.background", "picture-uri"))
+        ss.setdefault("previous_background", desktop.get_background())
     st = state.update(_f)
     ss = st["screensaver"]
 
@@ -111,8 +111,10 @@ def enable(wallpaper_id=None, timeout_min=None, lock=None, login_background=None
                 "linux-wallpaperengine's --screenshot does not work for every "
                 "wallpaper type." % (it["title"], it["type"])}
 
-    _gs_set("org.cinnamon.desktop.background", "picture-uri", "file://" + still)
-    _gs_set("org.cinnamon.desktop.background", "picture-options", "zoom")
+    if not desktop.set_background("file://" + still):
+        return {"ok": False, "error":
+                "setting the desktop background is not supported on %s"
+                % desktop.desktop_env()}
     _gs_set("org.cinnamon.desktop.session", "idle-delay",
             str(max(60, int(ss["timeout_min"]) * 60)))
     _gs_set("org.cinnamon.desktop.screensaver", "lock-enabled",
@@ -131,17 +133,13 @@ def disable():
     state.update(_f)
 
     if prev:
-        _gs_set("org.cinnamon.desktop.background", "picture-uri", prev)
+        desktop.set_background(prev)
     return {"ok": True, "restored": prev}
 
 
 def test():
-    """Lock the screen now, with Cinnamon's own locker."""
-    r = subprocess.run(["cinnamon-screensaver-command", "--lock"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        return {"ok": False, "error": (r.stderr or r.stdout or "").strip()}
-    return {"ok": True}
+    """Lock the screen now, with whatever locker this desktop ships."""
+    return desktop.lock_now()
 
 
 # --- the greeter, which needs root ------------------------------------------

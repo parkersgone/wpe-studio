@@ -130,6 +130,7 @@
   <section class="view" data-view="screensaver">
     <div class="pane">
       <h2>Lock screen</h2>
+      <div id="envnote2" hidden></div>
       <div class="warnbox" style="color:#ffd9a8;background:rgba(255,92,0,.10);border-color:#ff5c00">
         <b>Live wallpapers do not animate on the lock screen.</b><br>
         cinnamon-screensaver takes an image, not a running process, so one frame is
@@ -175,6 +176,7 @@
   <!-- ── SETTINGS ─────────────────────────────────────────────────── -->
   <section class="view" data-view="settings">
     <div class="pane">
+      <div id="envnote" hidden></div>
       <h2>General</h2>
       <div class="settingrow"><div><b>Frame rate limit</b><div class="muted">Lower reduces GPU load and fan noise.</div></div>
         <span class="sliderwrap"><input type="range" id="setFps" min="5" max="144" step="1"><output id="outFps"></output></span></div>

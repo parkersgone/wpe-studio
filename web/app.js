@@ -22,11 +22,20 @@ const App = {
 };
 
 /* ── api ──────────────────────────────────────────────────────────── */
+// When the daemon is bound off loopback it requires a token. It arrives in the
+// page URL (?t=...); every call carries it back so a bookmarked link keeps
+// working without a login screen.
+const API_TOKEN = new URLSearchParams(location.search).get("t") || "";
+const withToken = (p) =>
+  !API_TOKEN ? p : p + (p.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(API_TOKEN);
+
 async function api(path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (API_TOKEN) headers["Authorization"] = "Bearer " + API_TOKEN;
   const opt = body === undefined
-    ? {}
-    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
-  const r = await fetch(path, opt);
+    ? (API_TOKEN ? { headers } : {})
+    : { method: "POST", headers, body: JSON.stringify(body) };
+  const r = await fetch(withToken(path), opt);
   const text = await r.text();
   let j;
   try { j = JSON.parse(text); } catch { j = { error: text.slice(0, 400) }; }
@@ -56,6 +65,7 @@ async function boot() {
   document.body.dataset.skin = b.state.global.skin || "dark";
   App.monitor = App.monitor || (b.monitors[0] && b.monitors[0].name);
 
+  renderCapabilities();
   renderFilters();
   renderGrid();
   renderMonitors();
@@ -85,6 +95,30 @@ window.__wpeLeaveSteam = () => {
   if (t) t.click();
 };
 window.__wpeRescan = () => { setTimeout(() => $("#btnRescan").click(), 1500); };
+
+/* ── environment ──────────────────────────────────────────────────── */
+// Most of this only works on X11, and the desktop-integration bits are per
+// desktop environment. Say so where it matters instead of quietly no-opping.
+function renderCapabilities() {
+  const c = (App.boot.status || {}).capabilities;
+  if (!c) return;
+  const host = $("#envnote");
+  const problems = [];
+  if (!c.render) problems.push(c.render_note);
+  if (!c.background) problems.push(
+    `Setting the lock screen background is not supported on ${c.desktop}.`);
+  if (!c.desktop_icons) problems.push(
+    `The desktop-icons toggle is not supported on ${c.desktop} — if icons cover `
+    + `the wallpaper, turn them off in your file manager's settings.`);
+  if (App.boot.docker) problems.push(
+    "Running in Docker: the Steam launch hook, desktop icons and autostart act "
+    + "on the container, so they are disabled.");
+  if (!problems.length) { host.innerHTML = ""; host.hidden = true; return; }
+  host.hidden = false;
+  host.innerHTML = `<div class="warnbox"><b>${esc(c.desktop)} / ${esc(c.session)}</b> —
+    tested on ${esc(c.tested_on)}.<ul style="margin:6px 0 0 16px;padding:0">
+    ${problems.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
+}
 
 /* ── tabs ─────────────────────────────────────────────────────────── */
 $("#tabs").addEventListener("click", (e) => {
@@ -187,7 +221,7 @@ function tileHTML(it, live, fav) {
   const preset = it.type === "preset";
   return `<div class="tile ${live ? "live" : ""} ${App.sel === it.id ? "selected" : ""}" data-id="${esc(it.id)}">
     ${it.has_preview
-      ? `<img loading="lazy" src="/preview/${encodeURIComponent(it.id)}" alt="">`
+      ? `<img loading="lazy" src="${withToken("/preview/" + encodeURIComponent(it.id))}" alt="">`
       : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
     <div class="badges">
       <span class="badge type">${esc(it.type[0].toUpperCase() + it.type.slice(1))}</span>
@@ -257,7 +291,7 @@ function drawDetail() {
   const head = `
     <h3>${esc(it.title)}</h3>
     <div class="byline">${esc(it.type)} · ${fmtSize(it.size)} · ${esc(it.source)}</div>
-    ${it.has_preview ? `<img class="shot" src="/preview/${encodeURIComponent(it.id)}" alt="">` : ""}
+    ${it.has_preview ? `<img class="shot" src="${withToken("/preview/" + encodeURIComponent(it.id))}" alt="">` : ""}
     <div class="taglist">
       ${(it.tags || []).map((t) => `<span>${esc(t)}</span>`).join("")}
       ${it.contentrating ? `<span>${esc(it.contentrating)}</span>` : ""}
@@ -687,7 +721,7 @@ function renderPlaylists() {
   const active = App.boot.state.active_playlist;
   $("#plGrid").innerHTML = App.items.map((it) => `
     <div class="tile ${App.plPicked.has(it.id) ? "selected" : ""}" data-pl="${esc(it.id)}">
-      ${it.has_preview ? `<img loading="lazy" src="/preview/${encodeURIComponent(it.id)}" alt="">`
+      ${it.has_preview ? `<img loading="lazy" src="${withToken("/preview/" + encodeURIComponent(it.id))}" alt="">`
                        : `<div class="noimg"><i class="fa">&#xf03e;</i></div>`}
       <div class="cap">${esc(it.title)}</div>
     </div>`).join("");

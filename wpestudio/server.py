@@ -1,8 +1,17 @@
 """The HTTP layer. Stdlib only -- no pip install to get a wallpaper picker up.
 
-Binds 127.0.0.1 by default. WPE_BIND=0.0.0.0 exposes it (that is what the
-Docker compose file and the remote dashboard use); there is no auth here, so
-only do that behind Tailscale.
+Binds 127.0.0.1 by default, where anything that can reach it can already run
+`wpe-apply`, so a token would be theatre.
+
+The moment it is bound anywhere else -- WPE_BIND=0.0.0.0 for the Docker compose
+file or the remote dashboard -- it becomes an unauthenticated API that starts
+processes and writes gsettings on someone's desktop. So a non-loopback bind
+REQUIRES a token: one is generated into the config directory on first use, and
+requests must carry it as `Authorization: Bearer` or `?t=`. The page picks it up
+from the query string and reuses it, so a bookmarked URL still just works.
+
+This is not a substitute for putting it behind Tailscale. It is the difference
+between "one more step" and "no steps at all".
 """
 import json
 import mimetypes
@@ -10,6 +19,7 @@ import os
 import posixpath
 import random
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -19,6 +29,33 @@ from . import engine, library, lockscreen, paths, state, steamio
 
 HOST = os.environ.get("WPE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WPE_PORT", "8014"))
+
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+TOKEN_FILE = os.path.join(paths.CONFIG_DIR, "api-token")
+
+
+def api_token(host):
+    """The token required for this bind, or None on loopback."""
+    if host in LOOPBACK:
+        return None
+    try:
+        with open(TOKEN_FILE) as fh:
+            tok = fh.read().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    tok = secrets.token_urlsafe(24)
+    old = os.umask(0o077)
+    try:
+        with open(TOKEN_FILE, "w") as fh:
+            fh.write(tok + "\n")
+    finally:
+        os.umask(old)
+    return tok
+
+
+REQUIRED_TOKEN = None
 
 SKINS = [
     {"key": "dark", "label": "Dark", "bg": "#222222", "accent": "#4183f5"},
@@ -121,6 +158,18 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _authorised(self):
+        if REQUIRED_TOKEN is None:
+            return True
+        header = self.headers.get("Authorization") or ""
+        if header.startswith("Bearer "):
+            # compare_digest, so a wrong token cannot be found one byte at a time
+            if secrets.compare_digest(header[7:].strip(), REQUIRED_TOKEN):
+                return True
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        supplied = (q.get("t") or [""])[0]
+        return bool(supplied) and secrets.compare_digest(supplied, REQUIRED_TOKEN)
+
     def handle_one_request(self):
         # A browser closing a keep-alive socket is normal and is not worth a
         # traceback in the log; anything else still surfaces.
@@ -179,6 +228,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         p = u.path
         q = urllib.parse.parse_qs(u.query)
+        if not self._authorised():
+            return self._send(401, {"error": "token required",
+                                    "hint": "Authorization: Bearer <token>, or ?t=<token>"})
         try:
             return self._get(p, q)
         except Exception as e:
@@ -243,6 +295,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
+        if not self._authorised():
+            return self._send(401, {"error": "token required"})
         try:
             return self._post(u.path, self._body())
         except Exception as e:
@@ -441,6 +495,13 @@ Terminal=false
 
 
 def serve(host=HOST, port=PORT, background=False):
+    global REQUIRED_TOKEN
+    REQUIRED_TOKEN = api_token(host)
+    if REQUIRED_TOKEN:
+        print("wpe-studio: bound to %s, so a token is required.\n"
+              "  token file: %s\n"
+              "  open:       http://%s:%d/?t=%s"
+              % (host, TOKEN_FILE, host, port, REQUIRED_TOKEN), flush=True)
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     ROTATOR.start()
