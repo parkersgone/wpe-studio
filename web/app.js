@@ -1185,6 +1185,11 @@ function wsNote() {
   if (!st.steam_running) {
     bits.push("Steam is not running. Subscriptions are saved and download as soon as you open it.");
   }
+  if (App.ws.unreadable) {
+    bits.push("Steam would not list your existing subscriptions this time, so "
+      + "any older backlog is not shown. Anything you subscribe to here still "
+      + "downloads straight away.");
+  }
   host.innerHTML = bits.join(" ");
   host.hidden = !bits.length;
 }
@@ -1195,8 +1200,16 @@ function wsNote() {
  * piled up invisibly. This is that backlog, and the button that clears it.  */
 async function refreshQueue(full) {
   const r = await api("/api/queue" + (full ? "?full=1" : ""));
+  App.ws.unreadable = queueUnreadable(r);
   drawQueue(r);
   return r;
+}
+
+// "known" false means Steam would not enumerate the subscriptions this time,
+// which is not the same as having none. The bar stays hidden either way; this
+// only decides whether the note owns up to it.
+function queueUnreadable(r) {
+  return r && r.ok && r.known === false && !(r.missing || []).length;
 }
 
 function drawQueue(r) {
@@ -1220,6 +1233,7 @@ function drawQueue(r) {
   host.hidden = false;
   host.innerHTML = `
     <b>${missing} subscribed wallpaper${missing === 1 ? "" : "s"} not downloaded yet</b>
+    ${r.stale ? `<span class="muted">from the last list Steam gave us</span>` : ""}
     <div class="bar"><i style="width:0%"></i></div>
     <button class="btn primary" id="wqGo">Download all</button>`;
   $("#wqGo").onclick = async () => {

@@ -1,7 +1,14 @@
 # wpe-studio
 
-A Wallpaper Engine front end that renders on Linux, driving
-`linux-wallpaperengine` against the wallpapers Steam already downloaded.
+Wallpaper Engine, on Linux. A front end that drives `linux-wallpaperengine`
+against the wallpapers Steam already downloaded — browse and subscribe to the
+Workshop, change each wallpaper's own settings, and have Steam actually
+download what you subscribe to.
+
+Wallpaper Engine's Windows build runs under Proton but cannot draw on a Linux
+desktop, so its own UI is useless here. This replaces it.
+
+![The library, with a wallpaper's own settings on the right](docs/screenshot.png)
 
 ```
 wpe-studio                open the app
@@ -13,7 +20,10 @@ wpe-apply --set <id> k=v  change a setting and re-apply if it is on screen
 ```
 
 The UI is also a plain web app on `http://127.0.0.1:8014`, so it works from a
-browser and can be put behind the remote dashboard.
+browser and can be put behind a tunnel.
+
+There is a tray icon, and clicking it opens a small panel with the same
+thumbnail grid and the running wallpaper's settings — not a menu of words.
 
 ## What it runs on
 

@@ -600,12 +600,15 @@ class Handler(BaseHTTPRequestHandler):
             cmd = r["install_command"]
             if not cmd:
                 return self._send(200, {"ok": False, "error": "nothing to install"})
-            # Three ways to ask for root, most specific first. ask-sudo is a
-            # local tool on the author's machine; pkexec ships with polkit and
-            # is on essentially every desktop distro. If neither exists, hand
-            # the command back so the UI can show it rather than failing.
+            # Two ways to ask for root, most specific first. WPE_ASK_ROOT lets
+            # you point at your own "pop a terminal running this as root" tool
+            # (it is called as: <tool> --title <title> bash -c <command>);
+            # pkexec ships with polkit and is on essentially every desktop
+            # distro. If neither exists, hand the command back so the UI can
+            # show it rather than failing silently.
+            asker = os.environ.get("WPE_ASK_ROOT", "")
             for launcher in (
-                ["/ai/bin/ask-sudo", "--title",
+                [asker, "--title",
                  "wpe-studio - install dependencies", "bash", "-c", cmd],
                 [shutil.which("pkexec") or "", "bash", "-c", cmd],
             ):

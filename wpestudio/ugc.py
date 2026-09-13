@@ -84,9 +84,21 @@ def status(timeout=25):
         i = raw.find(MARK)
         if i >= 0:
             try:
-                return json.loads(raw[i + len(MARK):])
+                snap = json.loads(raw[i + len(MARK):])
             except ValueError:
-                pass
+                continue
+            if snap.get("known"):
+                _LAST_GOOD.update(at=time.time(), snapshot=snap)
+            elif _LAST_GOOD["snapshot"]:
+                # Fall back to the last list Steam did give us, minus whatever
+                # has landed on disk since.
+                from . import library
+                have = {i["id"] for i in library.scan()}
+                prev = _LAST_GOOD["snapshot"]
+                still = [w for w in prev["missing"] if w not in have]
+                snap = dict(prev, missing=still, stale=True,
+                            installed=prev["subscribed"] - len(still))
+            return snap
     return {"ok": False, "error": (p.stderr or p.stdout or "no reply")[-300:]}
 
 
@@ -188,6 +200,17 @@ class Sync(threading.Thread):
         self.proc.wait()
 
 
+# The last subscription list Steam was willing to give us. Reading it is
+# unreliable (see snapshot() in bin/wpe-ugc); downloading by id is not. Keeping
+# the last good answer means a backlog stays visible across the periods when
+# the client will not enumerate.
+_LAST_GOOD = {"at": 0.0, "snapshot": None}
+
+
+def remembered():
+    return _LAST_GOOD["snapshot"]
+
+
 class Watcher(threading.Thread):
     """Start the backlog moving the moment Steam appears.
 
@@ -214,8 +237,12 @@ class Watcher(threading.Thread):
                     # Give the client a moment to finish logging in; asking
                     # before that gets an empty subscription list.
                     time.sleep(20)
-                    if steamio.steam_running():
-                        Sync.start_job()
+                    if not steamio.steam_running():
+                        self.seen_running = running
+                        continue
+                    snap = status()
+                    if snap.get("ok") and snap.get("missing"):
+                        Sync.start_job(snap["missing"])
                 self.seen_running = running
             except Exception:
                 pass

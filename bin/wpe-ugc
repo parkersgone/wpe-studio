@@ -119,11 +119,25 @@ class UGC:
 
 
 def snapshot(u):
+    """What Steam says is subscribed, when it will say.
+
+    GetSubscribedItems reads the client's cached UGC list for the app, and that
+    cache is only populated while Steam considers the app to be running. We are
+    not the app -- we borrow its id to talk to the client -- so the list is
+    there sometimes and empty others, with no way to tell "you have no
+    subscriptions" from "I cannot see them right now".
+
+    An empty answer is therefore reported as unknown, not as zero. Zero would
+    read as "nothing left to download" and quietly switch the whole feature
+    off. Downloading by id does not depend on any of this and always works.
+    """
     ids = u.subscribed()
+    if not ids:
+        return {"known": False, "subscribed": 0, "installed": 0, "missing": []}
     installed, pending = [], []
     for i in ids:
         (installed if u.state(i) & INSTALLED else pending).append(str(i))
-    return {"subscribed": len(ids), "installed": len(installed),
+    return {"known": True, "subscribed": len(ids), "installed": len(installed),
             "missing": pending}
 
 
@@ -141,7 +155,15 @@ def cmd_sync(u, ids=None):
     """
     window = int(os.environ.get("WPE_UGC_WINDOW", "4"))
     budget = float(os.environ.get("WPE_UGC_TIMEOUT", "3600"))
-    queue = [int(i) for i in ids] if ids else [int(i) for i in snapshot(u)["missing"]]
+    if ids:
+        queue = [int(i) for i in ids]
+    else:
+        snap = snapshot(u)
+        if not snap["known"]:
+            emit(ok=False, event="done", error="subscriptions_unreadable",
+                 installed=0, failed=0)
+            return 0
+        queue = [int(i) for i in snap["missing"]]
     emit(ok=True, event="start", total=len(queue))
     if not queue:
         emit(ok=True, event="done", installed=0, failed=0)

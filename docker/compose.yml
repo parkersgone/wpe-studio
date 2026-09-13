@@ -1,12 +1,13 @@
-# docker compose -f /ai/wpe-studio/docker/compose.yml up -d
+# Run from this directory:  docker compose up -d
 #
 # Host networking on purpose: the UI has no auth, so it must not be reachable
 # beyond the machine unless you deliberately put it behind Tailscale (the same
 # rule the guest stack follows). Bound to 127.0.0.1 by default via WPE_BIND.
 #
-# The engine binary is built against libraries in /ai/src/linux-wallpaperengine,
-# and its RPATH points at absolute host paths, so that tree is mounted at the
-# same path inside the container rather than copied.
+# The engine binary's RPATH points at absolute host paths in the tree it was
+# built from, so that tree has to be mounted at the SAME path inside the
+# container rather than copied. Set WPE_ENGINE_SRC to wherever you built
+# linux-wallpaperengine; it is bind-mounted onto itself.
 services:
   wpe-studio:
     build:
@@ -29,11 +30,11 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video
       - __GL_THREADED_OPTIMIZATIONS=0
     volumes:
-      - /ai/wpe-studio:/app:ro
+      - ..:/app:ro
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ${HOME}/.var/app/com.valvesoftware.Steam/.local/share/Steam:/steam:ro
       - ${HOME}/.local/bin/linux-wallpaperengine:${HOME}/.local/bin/linux-wallpaperengine:ro
-      - /ai/src/linux-wallpaperengine:/ai/src/linux-wallpaperengine:ro
+      - ${WPE_ENGINE_SRC:-/opt/linux-wallpaperengine}:${WPE_ENGINE_SRC:-/opt/linux-wallpaperengine}:ro
       - ${HOME}/.config/wpe-studio:/config:rw
       - ${HOME}/.cache/wpe-studio:/cache:rw
     devices:
