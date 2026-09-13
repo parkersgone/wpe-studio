@@ -76,11 +76,23 @@ values applied and any relative asset path (`files/whatever.png`) rewritten to
 an absolute one, because the engine would otherwise resolve it against the
 *base* wallpaper's folder where the file does not exist.
 
-**Screensaver / lock screen** — see below.
+**Workshop** — a native grid, not the website: the same tiles as the library,
+the filters the Workshop page offers (type, age rating, genre, resolution,
+category — read off the page itself, so a tag added later needs no code
+change), a detail pane, and Subscribe. Subscribing POSTs to Steam with the
+session the embedded WebView holds, then asks the client to download it. The
+real site is still one checkbox away; it is the only place to sign in the
+first time, and the only place with comments and collections.
 
-**Steam** — the Workshop tab is the real steamcommunity.com page in an
-embedded WebView with its own persistent cookie jar, so you stay signed in and
-Subscribe works in place. Steam's Play button can be pointed at this app.
+**Downloads** — subscribing does not download anything. Steam records the
+subscription and waits for the game to call `ISteamUGC::DownloadItem`; that is
+Wallpaper Engine's job on Windows and nothing did it here, so this machine sat
+on 376 subscriptions with 63 on disk. `bin/wpe-ugc` asks the running client
+directly. The Workshop tab shows the backlog with a button that clears it, new
+subscriptions queue immediately, and a watcher starts the backlog when Steam
+appears.
+
+**Steam** — Steam's Play button can be pointed at this app.
 
 **Playlists** — rotate wallpapers on a timer, in order or shuffled.
 
@@ -141,17 +153,30 @@ right size every frame — and the screen was still black. Two reasons, both in
 Web wallpapers render. Set `WPE_CEF_DEBUG=1` to log `OnPaint` and the registered
 custom schemes.
 
-Two scene wallpapers still fail, in the engine's own scene loader
-("Projection must have a width", an nlohmann `type_error`). Those are marked
-Unsupported in the UI, with the recorded error on the tile.
+### Wallpapers that would not load
 
-## Lock screen
+Two failures in the engine's own scene loader, both wider than the wallpapers
+that exposed them:
 
-**Mint's own lock screen does the job.** cinnamon-screensaver already draws the
-pill with the avatar and the password box, and it already does PAM correctly.
+* `orthogonalprojection` with no `width` was fatal. It is not: a scene with no
+  projection size wants to be sized to the screen, which is what the loader's
+  own `auto` flag already means. Missing or unusable sizes now fall back to it.
+* the typed JSON accessors are `noexcept` but performed an nlohmann conversion
+  that throws on a type mismatch — so a field documented as a number arriving
+  as `"1920"` did not fail the wallpaper, it called `std::terminate` and took
+  the renderer down. They now coerce (a numeric string is read as the number it
+  is) and fall back to the default rather than throwing through `noexcept`.
 
-An earlier version of this replaced it with xsecurelock plus a custom saver, to
-get a *live* wallpaper behind the prompt. That was a mistake and is gone:
+Workshop content is written by thousands of people across several editor
+versions; the loader has to expect that.
+
+## No lock screen integration
+
+There was, and it is gone deliberately.
+
+An early version replaced cinnamon-screensaver with xsecurelock plus a custom
+saver, to get a *live* wallpaper behind the password prompt. That was a
+mistake:
 
 * Cinnamon's `custom-screensaver-command` makes cinnamon-screensaver **exit**
   and hands over drawing, input grabbing and authentication. That is a lot of
@@ -160,33 +185,16 @@ get a *live* wallpaper behind the prompt. That was a mistake and is gone:
   one, so the screen showed two.
 * The overlay could not be composited anyway. It needs an ARGB (32-bit) window
   to be transparent, the saver window is 24-bit, and `XReparentWindow` across
-  depths fails — silently, through xdotool. The overlay stayed a top-level
-  window floating over everything.
+  depths fails — silently, through xdotool.
 
-What is left is small and reliable: one frame is rendered from the chosen
-wallpaper and set as `org.cinnamon.desktop.background picture-uri`, which is
-the key cinnamon-screensaver reads for its background
-(`/usr/share/cinnamon-screensaver/util/settings.py:9`). The stock pill, over
-the wallpaper's imagery. Idle timeout is `org.cinnamon.desktop.session
-idle-delay`; the password requirement is `lock-enabled`. Nothing about the
-login flow is ours.
+A reduced version survived for a while: render one still frame and set it as
+`org.cinnamon.desktop.background picture-uri`, which is the key
+cinnamon-screensaver reads. It worked, but rendering that frame meant putting a
+full-screen window up and taking it down again, which locked the operator out
+of his own desktop the one time the teardown did not run. For a background.
 
-Side effect, and a welcome one: that key is also the desktop's static
-background, so stopping the live wallpaper falls back to a still of it rather
-than to black.
-
-**The still frame is rendered behind the desktop, not over it.** The engine is
-launched, demoted to `_NET_WM_WINDOW_TYPE_DESKTOP`, and only then does the
-grab run — and it is killed on every exit path including the timeout. The
-first version skipped the demotion and a full-screen render sat on top of the
-desktop for the length of the grab, which locked the operator out of his own
-machine until it was killed by hand.
-
-The greeter is the one thing Cinnamon cannot cover, because LightDM runs before
-the session exists. The same still can be installed as its background through
-one root step, popped as a terminal
-(`ask-sudo --title ... bash <script>` — the title is a flag; passing it
-positionally makes it the command and fails with a bare "not found").
+Your desktop already has a lock screen that does PAM correctly. This does not
+touch it.
 
 ## Steam's Play button
 
@@ -223,13 +231,13 @@ wpestudio/paths.py     every path, all overridable by env (Docker uses that)
 wpestudio/state.py     one JSON file, atomic writes
 wpestudio/library.py   scanning, project.json, property schemas, presets
 wpestudio/engine.py    argv, process control, the window demotion
-wpestudio/steamio.py   Workshop browse, launch-option hook
-wpestudio/lockscreen.py  cinnamon-screensaver background, greeter still
-wpestudio/lockscreen.py  lock screen background, greeter still
+wpestudio/steamio.py   Workshop browse and filters, subscribe, launch-option hook
+wpestudio/ugc.py       asking Steam to download subscribed items
+wpestudio/deps.py      what is missing, and this distro's install command
 wpestudio/desktop.py     desktop/session detection, per-DE integration
 wpestudio/server.py    stdlib HTTP, JSON API, static files
 web/                   the UI
-bin/                   wpe-studio, wpe-apply
+bin/                   wpe-studio, wpe-apply, wpe-tray, wpe-panel, wpe-ugc
 docker/                Dockerfile + compose.yml
 ```
 

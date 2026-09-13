@@ -138,6 +138,38 @@ def _geometry_pids(geom):
     return out
 
 
+_GEOM_ARG = re.compile(r"^\d+x\d+x\d+x\d+$")
+
+
+def _orphan_pids():
+    """Renderers drawing to a rectangle no monitor has any more.
+
+    Unplug a screen, or change the layout, and the engine that was painting the
+    old rectangle keeps running -- and becomes unstoppable, because everything
+    that stops a wallpaper matches on the geometry of a monitor that is now
+    gone. It cannot belong to anybody, so it goes.
+    """
+    live = {"%dx%dx%dx%d" % (m["x"], m["y"], m["width"], m["height"])
+            for m in monitors()}
+    out = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open("/proc/%d/comm" % pid) as fh:
+                if fh.read().strip() != PROC_NAME:
+                    continue
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                args = [a.decode("utf-8", "replace") for a in fh.read().split(b"\0")]
+        except OSError:
+            continue
+        geoms = [a for a in args if _GEOM_ARG.match(a)]
+        if geoms and not any(g in live for g in geoms):
+            out.append(pid)
+    return out
+
+
 def stop(mon=None, quiet=True):
     """Stop one monitor's wallpaper, or every one of ours plus strays."""
     stopped = []
@@ -150,6 +182,10 @@ def stop(mon=None, quiet=True):
         m = monitor(name)
         pids.update(_geometry_pids(
             "%dx%dx%dx%d" % (m["x"], m["y"], m["width"], m["height"])))
+        # Reap anything left painting a rectangle that no longer exists, on
+        # every stop rather than only on a full one -- otherwise it survives
+        # until the next reboot.
+        pids.update(_orphan_pids())
         for p in pids:
             try:
                 os.kill(p, signal.SIGTERM)
@@ -486,99 +522,6 @@ def status():
         "workshop": paths.WORKSHOP,
         "workshop_present": os.path.isdir(paths.WORKSHOP),
     }
-
-
-def screenshot(wid, out_path, delay=90):
-    """One still frame, for the lock screen and the login screen.
-
-    The window is demoted to the desktop layer FIRST. An earlier version left
-    it as an ordinary window, which meant a full-screen render sat on top of
-    everything for as long as the grab took and locked the user out of their
-    own desktop. A still frame is never worth covering the screen for.
-    """
-    target, preset_values = library.resolve_target(wid)
-    if not target:
-        return False
-    preset_values = _absolutise(preset_values, library.get(wid))
-
-    m = monitors()[0]
-    argv = [paths.ENGINE, "--window", "0x0x%dx%d" % (m["width"], m["height"]),
-            "--silent", "--fps", "30",
-            "--screenshot", out_path, "--screenshot-delay", str(delay)]
-    if os.path.isdir(paths.WPE_ASSETS):
-        argv += ["--assets-dir", paths.WPE_ASSETS]
-    props = dict(preset_values, **state.props_for(wid))
-    for k, v in sorted(props.items()):
-        if v is not None:
-            argv += ["--set-property", "%s=%s" % (k, _fmt_value(v))]
-    argv.append(target["id"] if target["source"] == "workshop" else target["dir"])
-
-    # Remove any previous frame FIRST. Without this, a failed render leaves the
-    # old file in place, the "did it work" check finds a non-empty file, and the
-    # caller is told the new wallpaper was captured when nothing happened.
-    try:
-        os.remove(out_path)
-    except OSError:
-        pass
-
-    before = _windows_by_class()
-    proc = subprocess.Popen(argv, env=_env(), stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                            start_new_session=True)
-    win = _find_window(proc.pid, timeout=20, before=before)
-    if win:
-        demote(win)
-
-    deadline = time.time() + 90
-    try:
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                break
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                break
-            time.sleep(0.5)
-    finally:
-        # Always take it down, including on a timeout. This process covering
-        # the desktop is the failure mode that matters.
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except Exception:
-            proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except Exception:
-                pass
-
-    if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
-        return False
-
-    # A file on disk is not a captured frame. --screenshot happily writes a
-    # fully black PNG for wallpaper types it cannot grab, and treating that as
-    # success puts a black lock screen up and reports that it worked.
-    if _is_blank(out_path):
-        try:
-            os.remove(out_path)
-        except OSError:
-            pass
-        return False
-    return True
-
-
-def _is_blank(path):
-    """True if the image has essentially no variation (a solid fill)."""
-    r = subprocess.run(
-        ["convert", path, "-resize", "64x64!", "-format",
-         "%[standard-deviation] %[mean]", "info:"],
-        capture_output=True, text=True)
-    try:
-        stddev, mean = (float(x) for x in r.stdout.split())
-    except Exception:
-        return False   # cannot tell -> do not claim it is blank
-    # 8-bit values are scaled to 0-65535 by ImageMagick's %[..] here.
-    return stddev < 400 and mean < 2000
 
 
 def restore():

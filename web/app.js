@@ -1009,7 +1009,7 @@ function renderSettings() {
   };
   $("#btnPaths").onclick = () => {
     $("#diag").textContent = JSON.stringify(
-      { ...App.boot.paths, status: App.boot.status, saver: App.boot.saver }, null, 2);
+      { ...App.boot.paths, status: App.boot.status }, null, 2);
   };
 }
 
